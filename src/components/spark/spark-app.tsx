@@ -346,9 +346,14 @@ export function SparkApp() {
     return map;
   }, [notes]);
 
+  const sortedNotes = useMemo(
+    () => [...notes].sort((a, b) => Number(!!a.done) - Number(!!b.done)),
+    [notes]
+  );
+
   const visibleNotes = useMemo(
-    () => (tab === ALL ? notes : notes.filter((n) => n.categoryId === tab)),
-    [notes, tab]
+    () => (tab === ALL ? sortedNotes : sortedNotes.filter((n) => n.categoryId === tab)),
+    [sortedNotes, tab]
   );
 
   const tabOrder = useMemo(() => [ALL, ...categories.map((c) => c.id)], [categories]);
@@ -875,9 +880,19 @@ export function SparkApp() {
               <EmptyDescription>在上方输入框写下第一条便签，回车即可在看板中查看</EmptyDescription>
             </EmptyHeader>
           </Empty>
+        ) : sortedNotes.length === 0 ? (
+          <Empty className="mt-4 rounded-xl border py-14">
+            <EmptyHeader>
+              <EmptyMedia variant="icon" className="size-12 rounded-xl">
+                <KanbanIcon className="!size-5 text-muted-foreground" />
+              </EmptyMedia>
+              <EmptyTitle>看板还是空的</EmptyTitle>
+              <EmptyDescription>在上方输入框写下第一条便签，回车即可在看板中查看</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
         ) : (
           <NoteKanban
-            notes={notes}
+            notes={sortedNotes}
             categories={categories}
             onNotesChange={handleKanbanNotesChange}
             onToggleDone={handleToggleDone}
@@ -916,7 +931,7 @@ export function SparkApp() {
         />
       </main>
 
-      <footer className="pointer-events-none fixed inset-x-0 bottom-0 z-40 select-none bg-gradient-to-t from-background via-background/85 to-transparent px-4 pb-1.5 pt-8 text-center text-xs text-muted-foreground/60">
+      <footer className="pointer-events-none fixed inset-x-0 bottom-0 z-40 select-none bg-gradient-to-t from-background via-background/85 to-transparent px-4 pb-6 pt-8 text-center text-xs text-muted-foreground/60">
         © {new Date().getFullYear()} Spark
       </footer>
     </>

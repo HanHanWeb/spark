@@ -8,10 +8,13 @@ import {
   LayersIcon,
   LogInIcon,
   LogOutIcon,
+  MonitorIcon,
+  MoonIcon,
   PencilIcon,
   PlusIcon,
   RefreshCwIcon,
   SparklesIcon,
+  SunIcon,
   TagIcon,
   Trash2Icon,
   UserRoundIcon,
@@ -64,6 +67,7 @@ import {
   ColorPickerSelection,
 } from "@/components/kibo-ui/color-picker";
 import { cn } from "@/lib/utils";
+import { useTheme } from "next-themes";
 
 export type SettingsSection = "account" | "sync" | "workspaces" | "categories" | "appearance";
 
@@ -94,8 +98,8 @@ const SECTION_META: Record<
   },
   appearance: {
     label: "外观",
-    title: "搜索框光效",
-    description: "为胶囊搜索框添加 Border Beam 流光边框，可选 4 种配色与速度",
+    title: "外观",
+    description: "主题与搜索框光效",
   },
 };
 
@@ -957,8 +961,36 @@ function AppearanceSection({
   beam: BeamSettings;
   onBeamChange: (patch: Partial<BeamSettings>) => void;
 }) {
+  const { theme, setTheme } = useTheme();
+
   return (
     <div className="flex flex-col gap-5">
+      <div className="rounded-lg border bg-card p-4">
+        <p className="text-sm font-medium">主题模式</p>
+        <p className="mt-1 text-xs text-muted-foreground">浅色 / 深色 / 跟随系统</p>
+        <div className="mt-3 grid grid-cols-3 gap-2">
+          {[
+            { id: "light", label: "浅色", Icon: SunIcon },
+            { id: "dark", label: "深色", Icon: MoonIcon },
+            { id: "system", label: "跟随系统", Icon: MonitorIcon },
+          ].map(({ id, label, Icon }) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setTheme(id)}
+              aria-pressed={theme === id}
+              className={cn(
+                "flex flex-col items-center gap-2 rounded-lg border p-3 text-xs font-medium transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+                theme === id ? "border-primary bg-primary/5" : "border-border hover:bg-accent/50"
+              )}
+            >
+              <Icon className="size-4" />
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       <div className="flex items-center justify-between rounded-lg border bg-card p-4">
         <div>
           <p className="text-sm font-medium">启用光效</p>
