@@ -1,35 +1,53 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { CheckIcon, Settings2Icon, XIcon, ZapIcon } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  CheckIcon,
+  KanbanIcon,
+  LayoutListIcon,
+  Settings2Icon,
+  XIcon,
+  ZapIcon,
+} from "lucide-react";
 import { toast } from "sonner";
 import {
   createId,
   deleteWorkspaceData,
+  loadBeamSettings,
   loadCategories,
   loadLastTypeId,
   loadNotes,
   loadCurrentWorkspaceId,
+  loadViewMode,
   loadWorkspaces,
   migrateLegacyData,
   nowMs,
+  saveBeamSettings,
   saveCategories,
   saveCurrentWorkspaceId,
   saveLastTypeId,
   saveNotes,
+  saveViewMode,
   saveWorkspaces,
   DEFAULT_CATEGORIES,
+  normalizePriority,
+  type BeamSettings,
   type Category,
   type Note,
+  type Priority,
+  type ViewMode,
   type Workspace,
 } from "@/lib/notes";
+import { NoteKanban } from "@/components/spark/note-kanban";
+import { PriorityChip } from "@/components/spark/priority-chip";
+import { PrioritySwitcher } from "@/components/spark/priority-switcher";
+import { BorderBeam } from "border-beam";
 import {
   InputGroup,
   InputGroupAddon,
   InputGroupInput,
 } from "@/components/ui/input-group";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Empty,
@@ -69,7 +87,18 @@ export function SparkApp() {
   const [loadedFor, setLoadedFor] = useState<string | null>(null);
 
   const [content, setContent] = useState("");
+  const [priority, setPriority] = useState<Priority>("medium");
   const [tab, setTab] = useState<string>(ALL);
+  const [tabDirection, setTabDirection] = useState(1);
+  const [viewMode, setViewMode] = useState<ViewMode>("list");
+  const [beam, setBeam] = useState<BeamSettings>(() => {
+    // SSR 时读取不到，客户端挂载后会纠正
+    try {
+      return loadBeamSettings();
+    } catch {
+      return { variant: "colorful", duration: 3, enabled: true };
+    }
+  });
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] =
@@ -276,6 +305,32 @@ export function SparkApp() {
       saveLastTypeId(currentId, typeId);
   }, [typeId, currentId, loadedFor]);
 
+  /* 视图模式：随工作区隔离存储 */
+  useEffect(() => {
+    if (!currentId) return;
+    queueMicrotask(() => {
+      setViewMode(loadViewMode(currentId));
+    });
+  }, [currentId]);
+
+  useEffect(() => {
+    if (currentId && loadedFor === currentId) saveViewMode(currentId, viewMode);
+  }, [currentId, loadedFor, viewMode]);
+
+  /* 搜索框光效：全局持久化 */
+  useEffect(() => {
+    // 挂载后以存储为准纠正 SSR 默认
+    setBeam(loadBeamSettings());
+  }, []);
+
+  useEffect(() => {
+    saveBeamSettings(beam);
+  }, [beam]);
+
+  const handleBeamChange = useCallback((patch: Partial<BeamSettings>) => {
+    setBeam((prev) => ({ ...prev, ...patch }));
+  }, []);
+
   const currentCategory =
     categories.find((c) => c.id === typeId) ?? categories[0];
 
@@ -294,6 +349,21 @@ export function SparkApp() {
   const visibleNotes = useMemo(
     () => (tab === ALL ? notes : notes.filter((n) => n.categoryId === tab)),
     [notes, tab]
+  );
+
+  const tabOrder = useMemo(() => [ALL, ...categories.map((c) => c.id)], [categories]);
+
+  const handleTabChange = useCallback(
+    (next: string) => {
+      if (next === tab) return;
+      const prevIdx = tabOrder.indexOf(tab);
+      const nextIdx = tabOrder.indexOf(next);
+      // 未知分类（如刚删除）按右侧切入
+      const dir = nextIdx > prevIdx ? 1 : nextIdx < prevIdx ? -1 : 1;
+      setTabDirection(dir);
+      setTab(next);
+    },
+    [tab, tabOrder]
   );
 
   const countsRecord = useMemo(
@@ -443,6 +513,7 @@ export function SparkApp() {
       categoryId: currentCategory.id,
       content: text,
       createdAt: nowMs(),
+      priority: normalizePriority(priority),
     };
     const nextNotes = [note, ...notes];
     saveNotes(currentId, nextNotes);
@@ -471,6 +542,27 @@ export function SparkApp() {
     });
     pushSoon();
   }
+
+  function handleChangePriority(noteId: string, p: Priority) {
+    setNotes((prev) => {
+      const next = prev.map((n) =>
+        n.id === noteId ? { ...n, priority: normalizePriority(p) } : n
+      );
+      if (currentId) saveNotes(currentId, next);
+      return next;
+    });
+    pushSoon();
+  }
+
+  const handleKanbanNotesChange = useCallback(
+    (nextNotes: Note[]) => {
+      setNotes(nextNotes);
+      if (currentId) saveNotes(currentId, nextNotes);
+      pushSoon();
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [currentId]
+  );
 
   function handleManualSync() {
     if (!cloud.user) return;
@@ -552,7 +644,12 @@ export function SparkApp() {
         />
       </div>
 
-      <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col px-4 pb-16">
+      <main
+        className={cn(
+          "mx-auto flex w-full flex-1 flex-col px-4 pb-16",
+          viewMode === "kanban" ? "max-w-6xl" : "max-w-2xl"
+        )}
+      >
         <header className="flex flex-col items-center pt-16 pb-10 text-center">
           <Image
             src="/favicon.svg"
@@ -568,126 +665,225 @@ export function SparkApp() {
         </header>
 
         <form onSubmit={handleSubmit}>
-          <InputGroup className="h-10 rounded-xl shadow-sm">
-            {/* 清零 addon 基类的负外边距；四壁内衬统一由这里的 p-1.5 提供 */}
-            <InputGroupAddon align="inline-start" className="p-1.5 pl-2 has-[>button]:ml-0">
-              <CategorySwitcher
-                embedded
-                categories={categories}
-                counts={countsRecord}
-                currentId={currentCategory?.id}
-                onSelect={setTypeId}
-                onNew={() => openSettings("categories", true)}
-                onManage={() => openSettings("categories")}
-              />
-              <span className="h-4 w-px shrink-0 bg-border" aria-hidden />
-            </InputGroupAddon>
-            <InputGroupInput
-              ref={inputRef}
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              placeholder={
-                currentCategory
-                  ? `记一条「${currentCategory.name}」，回车保存…`
-                  : "记录此刻的想法…"
-              }
-              maxLength={500}
-              autoFocus
-            />
-          </InputGroup>
+          {(() => {
+            const searchInput = (
+              <InputGroup className="h-11 rounded-full border-input bg-card shadow-sm has-[[data-slot=input-group-control]:focus-visible]:rounded-full has-[[data-slot=input-group-control]:focus-visible]:!border-input has-[[data-slot=input-group-control]:focus-visible]:!ring-0 has-[[data-slot=input-group-control]:focus-visible]:!ring-offset-0 focus-within:!border-input focus-within:!ring-0">
+                {/* 清零 addon 基类的负外边距；四壁内衬统一由这里的 p-1.5 提供 */}
+                <InputGroupAddon align="inline-start" className="p-1.5 pl-2.5 has-[>button]:ml-0">
+                  <CategorySwitcher
+                    embedded
+                    categories={categories}
+                    counts={countsRecord}
+                    currentId={currentCategory?.id}
+                    onSelect={setTypeId}
+                    onNew={() => openSettings("categories", true)}
+                    onManage={() => openSettings("categories")}
+                  />
+                  <span className="h-4 w-px shrink-0 bg-border" aria-hidden />
+                  <PrioritySwitcher embedded value={priority} onSelect={setPriority} />
+                  <span className="h-4 w-px shrink-0 bg-border" aria-hidden />
+                </InputGroupAddon>
+                <InputGroupInput
+                  ref={inputRef}
+                  value={content}
+                  onChange={(e) => setContent(e.target.value)}
+                  placeholder={
+                    currentCategory
+                      ? `记一条「${currentCategory.name}」，回车保存…`
+                      : "记录此刻的想法…"
+                  }
+                  maxLength={500}
+                  autoFocus
+                  className="focus-visible:ring-0 focus-visible:outline-none"
+                />
+              </InputGroup>
+            );
+            return beam.enabled ? (
+              <BorderBeam
+                colorVariant={beam.variant}
+                duration={beam.duration}
+                size="md"
+                borderRadius={22}
+                theme="auto"
+                className="rounded-full"
+              >
+                {searchInput}
+              </BorderBeam>
+            ) : (
+              searchInput
+            );
+          })()}
         </form>
 
-        <Tabs value={tab} onValueChange={setTab} className="mt-6">
-          <TabsList className="no-scrollbar h-9! w-full justify-start overflow-x-auto p-1">
-            <TabsTrigger value={ALL} className="shrink-0">
-              全部
-              <Badge variant="secondary" className="ml-1 h-4 px-1.5 text-[10px]">
-                {notes.length}
-              </Badge>
-            </TabsTrigger>
-            {categories.map((c) => (
-              <TabsTrigger key={c.id} value={c.id} className="shrink-0">
-                {c.name}
-                <Badge variant="secondary" className="ml-1 h-4 px-1.5 text-[10px]">
-                  {counts.get(c.id) ?? 0}
-                </Badge>
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
+        {/* 视图切换：列表 / 看板 */}
+        <div className="mt-6 flex items-center justify-between gap-3">
+          {viewMode === "list" ? (
+            <Tabs value={tab} onValueChange={handleTabChange} className="min-w-0 flex-1">
+              <TabsList className="no-scrollbar h-9! w-full justify-start overflow-x-auto rounded-full p-1">
+                <TabsTrigger value={ALL} className="shrink-0 rounded-full">
+                  全部
+                </TabsTrigger>
+                {categories.map((c) => (
+                  <TabsTrigger key={c.id} value={c.id} className="shrink-0 rounded-full">
+                    {c.name}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
+          ) : (
+            <p className="hidden sm:block truncate text-sm text-muted-foreground">
+              看板按分类分列，拖拽可改分类与排序
+            </p>
+          )}
+          <div className="flex shrink-0 items-center gap-1 rounded-full border bg-muted p-1">
+            <Button
+              variant="ghost"
+              size="xs"
+              aria-pressed={viewMode === "list"}
+              data-active={viewMode === "list"}
+              onClick={() => setViewMode("list")}
+              className={cn(
+                "h-7 rounded-full px-3 transition-colors",
+                viewMode === "list"
+                  ? "bg-background shadow-sm text-foreground hover:bg-background"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <LayoutListIcon className="size-3.5" />
+              列表
+            </Button>
+            <Button
+              variant="ghost"
+              size="xs"
+              aria-pressed={viewMode === "kanban"}
+              data-active={viewMode === "kanban"}
+              onClick={() => setViewMode("kanban")}
+              className={cn(
+                "h-7 rounded-full px-3 transition-colors",
+                viewMode === "kanban"
+                  ? "bg-background shadow-sm text-foreground hover:bg-background"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <KanbanIcon className="size-3.5" />
+              看板
+            </Button>
+          </div>
+        </div>
 
-        {visibleNotes.length === 0 ? (
-          <Empty className="mt-5 rounded-xl border py-14">
-            <EmptyHeader>
-              <EmptyMedia variant="icon" className="size-12 rounded-xl">
-                <ZapIcon className="!size-5 text-muted-foreground" />
-              </EmptyMedia>
-              <EmptyTitle>这里空空如也</EmptyTitle>
-              <EmptyDescription>
-                {tab === ALL
-                  ? "在上方输入框写下第一条便签，回车即可保存"
-                  : `「${categoryMap.get(tab)?.name ?? ""}」还没有内容，在上方输入并回车添加`}
-              </EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        ) : (
-          <ul className="divide-y mt-4 overflow-hidden rounded-xl border bg-card shadow-sm">
-            {visibleNotes.map((note) => {
-              const cat = categoryMap.get(note.categoryId);
-              if (!cat) return null;
-              const done = note.done === true;
-              return (
-                <li
-                  key={note.id}
-                  className={cn(
-                    "group flex items-center gap-3 px-3 py-2.5 transition-opacity",
-                    done && "opacity-55"
+        {viewMode === "list" ? (
+          <div
+            key={tab}
+            className={cn(
+              "mt-4 animate-in fade-in duration-300 ease-out will-change-transform",
+              tabDirection > 0 ? "slide-in-from-right-3" : "slide-in-from-left-3"
+            )}
+          >
+            {visibleNotes.length === 0 ? (
+              <Empty className="rounded-xl border py-14">
+                <EmptyHeader>
+                  <EmptyMedia variant="icon" className="size-12 rounded-xl">
+                    <ZapIcon className="!size-5 text-muted-foreground" />
+                  </EmptyMedia>
+                  <EmptyTitle>这里空空如也</EmptyTitle>
+                  {tab === ALL && (
+                    <EmptyDescription>在上方输入框写下第一条便签，回车即可保存</EmptyDescription>
                   )}
-                >
-                  <CategoryChip category={cat} />
-                  <div className="min-w-0 flex-1">
-                    <p
-                      className={cn(
-                        "min-w-0 text-sm leading-relaxed break-words whitespace-pre-wrap",
-                        done && "line-through decoration-muted-foreground/60"
-                      )}
-                    >
-                      {note.content}
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 items-center">
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      aria-label={done ? "标记为未完成" : "标记为已完成"}
-                      title={done ? "标记为未完成" : "标记为已完成"}
-                      onClick={() => handleToggleDone(note.id)}
-                      className={cn(
-                        "opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100",
-                        done
-                          ? "text-primary"
-                          : "text-muted-foreground hover:text-foreground"
-                      )}
-                    >
-                      <CheckIcon />
-                    </Button>
-                    <NoteDeleteConfirm
-                      onDelete={() => handleDelete(note.id)}
-                    >
+                </EmptyHeader>
+              </Empty>
+            ) : (
+              <ul className="divide-y overflow-hidden rounded-xl border bg-card shadow-sm">
+              {visibleNotes.map((note) => {
+                const cat = categoryMap.get(note.categoryId);
+                if (!cat) return null;
+                const done = note.done === true;
+                const curPriority = (note.priority ?? "medium") as Priority;
+                const nextPriority: Priority =
+                  curPriority === "low" ? "medium" : curPriority === "medium" ? "high" : "low";
+                return (
+                  <li
+                    key={note.id}
+                    className={cn(
+                      "group flex items-center gap-3 px-3 py-2.5 transition-opacity",
+                      done && "opacity-55"
+                    )}
+                  >
+                    <div className="flex items-center gap-1.5 shrink-0 self-center">
+                      <CategoryChip category={cat} className="h-5 py-0" />
+                      <button
+                        type="button"
+                        aria-label={`优先级：${curPriority}，点击切换`}
+                        title="点击切换优先级：低 → 中 → 高"
+                        onClick={() => handleChangePriority(note.id, nextPriority)}
+                        className="inline-flex items-center outline-none focus-visible:ring-2 focus-visible:ring-ring/50 rounded-full"
+                      >
+                        <PriorityChip priority={curPriority} className="h-5 py-0" />
+                      </button>
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p
+                        className={cn(
+                          "min-w-0 text-sm leading-relaxed break-words whitespace-pre-wrap",
+                          done && "line-through decoration-muted-foreground/60"
+                        )}
+                      >
+                        {note.content}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 items-center">
                       <Button
                         variant="ghost"
                         size="icon-xs"
-                        aria-label="删除这条便签"
-                        className="-mr-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:text-destructive"
+                        aria-label={done ? "标记为未完成" : "标记为已完成"}
+                        title={done ? "标记为未完成" : "标记为已完成"}
+                        onClick={() => handleToggleDone(note.id)}
+                        className={cn(
+                          "opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100",
+                          done
+                            ? "text-primary"
+                            : "text-muted-foreground hover:text-foreground"
+                        )}
                       >
-                        <XIcon />
+                        <CheckIcon />
                       </Button>
-                    </NoteDeleteConfirm>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
+                      <NoteDeleteConfirm
+                        onDelete={() => handleDelete(note.id)}
+                      >
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          aria-label="删除这条便签"
+                          className="-mr-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:text-destructive"
+                        >
+                          <XIcon />
+                        </Button>
+                      </NoteDeleteConfirm>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+            )}
+          </div>
+        ) : notes.length === 0 ? (
+          <Empty className="mt-4 rounded-xl border py-14">
+            <EmptyHeader>
+              <EmptyMedia variant="icon" className="size-12 rounded-xl">
+                <KanbanIcon className="!size-5 text-muted-foreground" />
+              </EmptyMedia>
+              <EmptyTitle>看板还是空的</EmptyTitle>
+              <EmptyDescription>在上方输入框写下第一条便签，回车即可在看板中查看</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        ) : (
+          <NoteKanban
+            notes={notes}
+            categories={categories}
+            onNotesChange={handleKanbanNotesChange}
+            onToggleDone={handleToggleDone}
+            onDelete={handleDelete}
+            onPriorityChange={handleChangePriority}
+          />
         )}
 
         <SettingsDialog
@@ -715,6 +911,8 @@ export function SparkApp() {
           categoryCounts={countsRecord}
           onDeleteCategory={handleDeleteCategory}
           onCreateCategory={handleCreateCategory}
+          beam={beam}
+          onBeamChange={handleBeamChange}
         />
       </main>
 

@@ -7,7 +7,11 @@
 - **速记即所得**：搜索框直接输入，回车保存；分类随选，标签着色
 - **多工作区**：工作区之间相互隔离，各自独立的分类与便签，可随时切换
 - **完成态**：便签可标记为已完成（划线弱化显示），状态跨设备同步
-- **控制面板**：统一管理账号、云同步、工作区与分类，支持行内重命名
+- **优先级**：新增高 / 中 / 低三级，淡红到深红渐变区分；添加时通过胶囊选择器设定，后续点击胶囊可循环切换
+- **双视图**：列表与 Kanban 看板一键切换（视图按工作区记忆）。看板按分类分列，网格一行 4 个自动换行，拖拽改分类与排序，逐块淡入
+- **分类切换动效**：列表分类切换按左右顺序滑入（`slide-in-from-left/right`），符合导航逻辑
+- **胶囊搜索框 + Border Beam**：`h-11 rounded-full` 胶囊输入框，集成 `border-beam` 流光边框，支持 4 种配色（colorful/ocean/sunset/mono）与开关，速度可调（快 2s / 默认 3s / 慢 4s，滑杆 0.6–4s），自动跟随圆角
+- **控制面板**：统一管理账号、云同步、工作区、分类与外观；固定 `672×520` 尺寸，无滚动条（`no-scrollbar` 可滚但不显示）；外观分区可开关光效、切换配色与速度
 - **首次使用引导**：仿 Windows OOBE 的分步引导（注册 → 建工作区 → 欢迎页）
 - **云同步**：注册用户自动建立基线对账，本地变更防抖推送，拉取乱序守卫
 - **暗色模式**：基于 `next-themes` 的明暗主题适配
@@ -17,7 +21,8 @@
 | 层 | 选型 |
 | --- | --- |
 | 框架 | Next.js 16（App Router）· React 19 · TypeScript |
-| UI | Tailwind CSS 4 · shadcn/ui（radix-ui）· lucide-react |
+| UI | Tailwind CSS 4 · shadcn/ui（radix-ui）· lucide-react · tw-animate-css |
+| 交互 | @dnd-kit（拖拽排序）· border-beam（流光边框） |
 | 数据 | Turso（libsql）· localStorage 本地持久化 |
 | 鉴权 | jose（JWT） |
 
@@ -59,15 +64,18 @@ src/
 │   ├── api/sync/        # 全量推送拉取（PUT/GET）
 │   └── page.tsx         # 入口页面
 ├── components/
-│   ├── spark/           # 业务组件（主界面、控制面板、引导等）
+│   ├── kibo-ui/kanban/  # Kanban 拖拽容器（基于 @dnd-kit）
+│   ├── spark/           # 业务组件（主界面、控制面板、引导、note-kanban、priority-* 等）
 │   └── ui/              # shadcn/ui 基础组件
 ├── hooks/
 │   └── use-cloud-sync.ts # 登录态与推拉同步的核心 hook
 └── lib/
-    ├── notes.ts         # 工作区/分类/便签的本地存储层
+    ├── notes.ts         # 工作区/分类/便签/优先级/视图/光效的本地存储层
     ├── db.ts            # libsql 连接与建表迁移
     └── auth.ts          # JWT 会话签发与校验
 ```
+
+> 2026-08-28 今日新增：Kanban 双视图（拖拽、网格 4 列、逐块淡入）、优先级三级（淡红→深红、可循环切换）、胶囊搜索框 + Border Beam（4 配色/开关/2–4s 调速）、分类左右滑入动效、去除分类计数与创建时间、外观与控制面板固定尺寸无滚动条等细节打磨。
 
 ## 同步机制概要
 

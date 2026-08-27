@@ -11,19 +11,28 @@ import {
   PencilIcon,
   PlusIcon,
   RefreshCwIcon,
+  SparklesIcon,
   TagIcon,
   Trash2Icon,
   UserRoundIcon,
 } from "lucide-react";
 import {
+  BEAM_VARIANTS,
+  BEAM_VARIANT_LABEL,
   COLOR_OPTIONS,
   ICON_OPTIONS,
   createId,
   formatFullTime,
   formatTime,
   getPill,
+  getPillStyle,
+  isHexColor,
+  rgbToHex,
+  toHex,
+  type BeamSettings,
+  type BeamVariant,
   type Category,
-  type ColorId,
+  type CategoryColor,
   type IconKey,
   type Workspace,
 } from "@/lib/notes";
@@ -42,9 +51,21 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  ColorPicker,
+  ColorPickerFormat,
+  ColorPickerHue,
+  ColorPickerOutput,
+  ColorPickerSelection,
+} from "@/components/kibo-ui/color-picker";
 import { cn } from "@/lib/utils";
 
-export type SettingsSection = "account" | "sync" | "workspaces" | "categories";
+export type SettingsSection = "account" | "sync" | "workspaces" | "categories" | "appearance";
 
 const SECTION_META: Record<
   SettingsSection,
@@ -71,6 +92,11 @@ const SECTION_META: Record<
     // 描述包含当前工作区名，在渲染时动态生成
     description: "",
   },
+  appearance: {
+    label: "外观",
+    title: "搜索框光效",
+    description: "为胶囊搜索框添加 Border Beam 流光边框，可选 4 种配色与速度",
+  },
 };
 
 /** 分区导航图标（switch 静态映射，规避 react-hooks/static-components） */
@@ -90,6 +116,8 @@ function SectionGlyph({
       return <LayersIcon className={className} />;
     case "categories":
       return <TagIcon className={className} />;
+    case "appearance":
+      return <SparklesIcon className={className} />;
   }
 }
 
@@ -139,6 +167,9 @@ interface SettingsDialogProps {
   categoryCounts: Record<string, number>;
   onDeleteCategory: (id: string) => void;
   onCreateCategory: (category: Category) => void;
+  /* ---------- 外观 ---------- */
+  beam: BeamSettings;
+  onBeamChange: (patch: Partial<BeamSettings>) => void;
 }
 
 export function SettingsDialog({
@@ -153,7 +184,7 @@ export function SettingsDialog({
       {/* open 条件渲染：关闭即卸载，打开时各分区内部状态自动复位 */}
       {open && (
         <DialogContent
-          className="gap-0 overflow-hidden p-0 sm:max-w-2xl"
+          className="gap-0 overflow-hidden p-0 w-[672px] h-[520px] max-w-[90vw] max-h-[85vh] sm:max-w-[672px]"
           // 不自动聚焦，防止落在首行悬停显示的删除按钮上
           onOpenAutoFocus={(e) => e.preventDefault()}
         >
@@ -197,6 +228,8 @@ function SettingsPanel({
   categoryCounts,
   onDeleteCategory,
   onCreateCategory,
+  beam,
+  onBeamChange,
 }: PanelProps) {
   const [active, setActive] = useState<SettingsSection>(initialSection);
   const sectionIds = Object.keys(SECTION_META) as SettingsSection[];
@@ -210,7 +243,7 @@ function SettingsPanel({
     : SECTION_META.categories.description;
 
   return (
-    <div className="flex min-h-[27rem] max-h-[40rem]">
+    <div className="flex h-[520px] w-full">
       {/* 左侧分区导航 */}
       <nav
         aria-label="设置分区"
@@ -240,8 +273,8 @@ function SettingsPanel({
         ))}
       </nav>
 
-      {/* 右侧内容区 */}
-      <div className="min-w-0 flex-1 overflow-y-auto">
+      {/* 右侧内容区 - 固定尺寸，无滚动条 */}
+      <div className="min-w-0 flex-1 overflow-y-auto no-scrollbar">
         <div className="pt-5 pr-12 pb-1 pl-5">
           <DialogTitle>{SECTION_META[active].title}</DialogTitle>
           <DialogDescription className="mt-1.5 text-xs leading-relaxed">
@@ -307,6 +340,10 @@ function SettingsPanel({
               onDelete={onDeleteCategory}
               onCreate={onCreateCategory}
             />
+          )}
+
+          {active === "appearance" && (
+            <AppearanceSection beam={beam} onBeamChange={onBeamChange} />
           )}
         </div>
       </div>
@@ -643,6 +680,12 @@ function WorkspaceList({
 
 /* ---------------- 分类 ---------------- */
 
+/** 自定义色 swatch 的彩虹渐变：预设色首尾相接环成一圈 */
+const CUSTOM_SWATCH_BG = `conic-gradient(${[
+  ...COLOR_OPTIONS.map((c) => c.hex),
+  COLOR_OPTIONS[0].hex,
+].join(", ")})`;
+
 function CategoriesSection({
   categories,
   counts,
@@ -685,7 +728,7 @@ function CategoriesSection({
   );
 }
 
-/** 新建分类表单：名称、图标、颜色与实时预览 */
+/** 新建分类表单：名称、图标、颜色（预设 + 自定义取色器）与实时预览 */
 function NewCategoryForm({
   onCancel,
   onCreate,
@@ -695,7 +738,8 @@ function NewCategoryForm({
 }) {
   const [name, setName] = useState("");
   const [icon, setIcon] = useState<IconKey>("zap");
-  const [color, setColor] = useState<ColorId>("purple");
+  const [color, setColor] = useState<CategoryColor>("purple");
+  const isCustom = isHexColor(color);
 
   const valid = name.trim().length > 0;
 
@@ -735,6 +779,7 @@ function NewCategoryForm({
                 ? cn(getPill(color), "border-transparent font-medium")
                 : "border-border text-muted-foreground hover:bg-accent hover:text-accent-foreground"
             )}
+            style={getPillStyle(color)}
           >
             <Icon />
           </button>
@@ -762,12 +807,51 @@ function NewCategoryForm({
             )}
           />
         ))}
+
+        {/* 自定义颜色：swatch 即取色器入口，选中后 swatch 显示所选色值 */}
+        <Popover>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={isCustom}
+              aria-label="自定义颜色"
+              title="自定义颜色"
+              className={cn(
+                "size-6 rounded-full transition-all outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+                isCustom &&
+                  "ring-2 ring-ring ring-offset-2 ring-offset-background"
+              )}
+              style={{ background: isCustom ? color : CUSTOM_SWATCH_BG }}
+            />
+          </PopoverTrigger>
+          <PopoverContent align="end" className="w-64 p-3">
+            <ColorPicker
+              defaultValue={toHex(color)}
+              onChange={(value) => {
+                const [r, g, b] = value as number[];
+                setColor(rgbToHex(r, g, b));
+              }}
+            >
+              <ColorPickerSelection className="h-32" />
+              <div className="mt-3 space-y-2">
+                <ColorPickerHue />
+                <div className="flex items-center gap-2">
+                  <ColorPickerOutput />
+                  <ColorPickerFormat />
+                </div>
+              </div>
+            </ColorPicker>
+          </PopoverContent>
+        </Popover>
+
         {/* 实时预览：直接内联在颜色行右侧，不再单独占一块 */}
         <span
           className={cn(
             "ml-auto inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium",
             getPill(color)
           )}
+          style={getPillStyle(color)}
         >
           <CategoryIcon name={icon} className="size-3" />
           {name.trim() || "分类名称"}
@@ -854,5 +938,106 @@ function CategoryList({
         )
       )}
     </ul>
+  );
+}
+
+/* ---------------- 外观：搜索框光效 ---------------- */
+
+const BEAM_PREVIEW: Record<BeamVariant, string> = {
+  colorful: "linear-gradient(90deg,#ff3b82,#8b5cf6,#3b82f6,#06b6d4,#22c55e,#f59e0b)",
+  ocean: "linear-gradient(90deg,#06b6d4,#3b82f6,#6366f1,#8b5cf6)",
+  sunset: "linear-gradient(90deg,#f59e0b,#f97316,#ef4444,#ec4899)",
+  mono: "linear-gradient(90deg,#52525b,#a1a1aa,#e4e4e7,#52525b)",
+};
+
+function AppearanceSection({
+  beam,
+  onBeamChange,
+}: {
+  beam: BeamSettings;
+  onBeamChange: (patch: Partial<BeamSettings>) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="flex items-center justify-between rounded-lg border bg-card p-4">
+        <div>
+          <p className="text-sm font-medium">启用光效</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">关闭后搜索框不再显示流光边框</p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={beam.enabled}
+          onClick={() => onBeamChange({ enabled: !beam.enabled })}
+          className={cn(
+            "relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+            beam.enabled ? "bg-primary" : "bg-input"
+          )}
+        >
+          <span
+            className={cn(
+              "pointer-events-none block size-5 rounded-full bg-background shadow-sm ring-0 transition-transform",
+              beam.enabled ? "translate-x-5" : "translate-x-0"
+            )}
+          />
+        </button>
+      </div>
+
+      <div className={cn("rounded-lg border bg-card p-4", !beam.enabled && "opacity-50 pointer-events-none")}>
+        <p className="text-sm font-medium">光效样式</p>
+        <p className="mt-1 text-xs text-muted-foreground">4 种内置配色，跟随胶囊搜索框边框流动</p>
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          {BEAM_VARIANTS.map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => onBeamChange({ variant: v })}
+              aria-pressed={beam.variant === v}
+              className={cn(
+                "relative flex flex-col gap-2 rounded-lg border p-3 text-left transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+                beam.variant === v
+                  ? "border-primary bg-primary/5"
+                  : "border-border hover:bg-accent/50"
+              )}
+            >
+              <span
+                aria-hidden
+                className="h-2 w-full rounded-full"
+                style={{ background: BEAM_PREVIEW[v] }}
+              />
+              <span className="text-xs font-medium">{BEAM_VARIANT_LABEL[v]}</span>
+              {beam.variant === v && (
+                <span className="absolute right-2 top-2 size-2 rounded-full bg-primary" />
+              )}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className={cn("rounded-lg border bg-card p-4", !beam.enabled && "opacity-50 pointer-events-none")}>
+        <div className="flex items-center justify-between">
+          <p className="text-sm font-medium">流动速度</p>
+          <span className="text-xs tabular-nums text-muted-foreground">{beam.duration.toFixed(2)}s / 圈</span>
+        </div>
+        <div className="mt-3 flex items-center gap-3">
+          <span className="text-xs text-muted-foreground">快</span>
+          <input
+            type="range"
+            min={0.6}
+            max={4}
+            step={0.02}
+            value={beam.duration}
+            onChange={(e) => onBeamChange({ duration: Number(e.target.value) })}
+            className="h-2 flex-1 cursor-pointer appearance-none rounded-full bg-muted accent-primary"
+          />
+          <span className="text-xs text-muted-foreground">慢</span>
+        </div>
+        <div className="mt-2 flex gap-2">
+          <Button size="xs" variant="outline" onClick={() => onBeamChange({ duration: 2 })}>快 2s</Button>
+          <Button size="xs" variant="outline" onClick={() => onBeamChange({ duration: 3 })}>默认 3s</Button>
+          <Button size="xs" variant="outline" onClick={() => onBeamChange({ duration: 4 })}>慢 4s</Button>
+        </div>
+      </div>
+    </div>
   );
 }

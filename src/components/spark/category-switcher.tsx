@@ -11,7 +11,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CategoryChip } from "@/components/spark/category-chip";
 
@@ -55,7 +54,7 @@ export function CategorySwitcher({
             type="button"
             aria-label="选择分类"
             title={current?.name}
-            className="flex cursor-text select-none items-center gap-0 rounded-md text-sm font-medium outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+            className="flex cursor-text select-none items-center gap-0 rounded-full text-sm font-medium outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
           >
             {current ? (
               <CategoryChip category={current} />
@@ -93,9 +92,6 @@ export function CategorySwitcher({
           >
             <CategoryChip category={c} />
             <span className="min-w-0 flex-1" />
-            <Badge variant="secondary" className="h-4 shrink-0 px-1.5 text-[10px]">
-              {counts[c.id] ?? 0}
-            </Badge>
             {c.id === currentId && (
               <CheckIcon className="size-4 shrink-0 text-primary" />
             )}

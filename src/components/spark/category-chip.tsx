@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import { getPill, type Category } from "@/lib/notes";
+import { getPill, getPillStyle, type Category } from "@/lib/notes";
 import { CategoryIcon } from "@/components/spark/category-icon";
 
 export function CategoryChip({
@@ -16,6 +16,7 @@ export function CategoryChip({
         getPill(category.color),
         className
       )}
+      style={getPillStyle(category.color)}
     >
       <CategoryIcon name={category.icon} className="size-3" />
       {category.name}

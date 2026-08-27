@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import {
   BookOpen,
   Bookmark,
@@ -38,12 +39,17 @@ export type ColorId =
   | "pink"
   | "cyan";
 
+/** 分类颜色：预设色 id 或自定义 hex（#rgb / #rrggbb） */
+export type CategoryColor = ColorId | `#${string}`;
+
 export interface Category {
   id: string;
   name: string;
   icon: IconKey;
-  color: ColorId;
+  color: CategoryColor;
 }
+
+export type Priority = "low" | "medium" | "high";
 
 export interface Note {
   id: string;
@@ -52,6 +58,8 @@ export interface Note {
   createdAt: number;
   /** 完成态；旧数据缺省视为未完成 */
   done?: boolean;
+  /** 优先级；旧数据缺省视为中 */
+  priority?: Priority;
 }
 
 export interface Workspace {
@@ -78,6 +86,8 @@ export const ICON_OPTIONS: { key: IconKey; label: string; Icon: LucideIcon }[] =
 interface ColorOption {
   id: ColorId;
   label: string;
+  /** 对应的 hex 值，用作自定义取色器的初始色 */
+  hex: string;
   swatch: string;
   pill: string;
 }
@@ -86,48 +96,56 @@ export const COLOR_OPTIONS: ColorOption[] = [
   {
     id: "purple",
     label: "紫",
+    hex: "#a855f7",
     swatch: "bg-purple-500",
     pill: "bg-purple-500/10 text-purple-600 dark:bg-purple-400/15 dark:text-purple-300",
   },
   {
     id: "orange",
     label: "橙",
+    hex: "#f97316",
     swatch: "bg-orange-500",
     pill: "bg-orange-500/10 text-orange-600 dark:bg-orange-400/15 dark:text-orange-300",
   },
   {
     id: "blue",
     label: "蓝",
+    hex: "#3b82f6",
     swatch: "bg-blue-500",
     pill: "bg-blue-500/10 text-blue-600 dark:bg-blue-400/15 dark:text-blue-300",
   },
   {
     id: "green",
     label: "绿",
+    hex: "#22c55e",
     swatch: "bg-green-500",
     pill: "bg-green-500/10 text-green-600 dark:bg-green-400/15 dark:text-green-300",
   },
   {
     id: "red",
     label: "红",
+    hex: "#ef4444",
     swatch: "bg-red-500",
     pill: "bg-red-500/10 text-red-600 dark:bg-red-400/15 dark:text-red-300",
   },
   {
     id: "amber",
     label: "黄",
+    hex: "#fbbf24",
     swatch: "bg-amber-400",
     pill: "bg-amber-500/15 text-amber-700 dark:bg-amber-400/20 dark:text-amber-300",
   },
   {
     id: "pink",
     label: "粉",
+    hex: "#ec4899",
     swatch: "bg-pink-500",
     pill: "bg-pink-500/10 text-pink-600 dark:bg-pink-400/15 dark:text-pink-300",
   },
   {
     id: "cyan",
     label: "青",
+    hex: "#06b6d4",
     swatch: "bg-cyan-500",
     pill: "bg-cyan-500/10 text-cyan-600 dark:bg-cyan-400/15 dark:text-cyan-300",
   },
@@ -137,8 +155,83 @@ const COLOR_MAP = new Map<ColorId, ColorOption>(
   COLOR_OPTIONS.map((c) => [c.id, c])
 );
 
-export function getPill(color: ColorId): string {
+/** 自定义色的胶囊样式：色值经 --cat-color 注入，文字亮暗两态分别混黑/混白保证对比度 */
+export const CUSTOM_COLOR_PILL =
+  "bg-(--cat-color)/10 text-[color-mix(in_srgb,var(--cat-color)_75%,black)] dark:bg-(--cat-color)/15 dark:text-[color-mix(in_srgb,var(--cat-color)_45%,white)]";
+
+export function isHexColor(c: string): c is `#${string}` {
+  return /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(c);
+}
+
+export function rgbToHex(r: number, g: number, b: number): `#${string}` {
+  const ch = (v: number) =>
+    Math.round(Math.min(255, Math.max(0, v)))
+      .toString(16)
+      .padStart(2, "0");
+  return `#${ch(r)}${ch(g)}${ch(b)}`;
+}
+
+/** 归一为 hex：预设色取对应色值，自定义色原样返回 */
+export function toHex(color: CategoryColor): string {
+  if (isHexColor(color)) return color;
+  return COLOR_MAP.get(color)?.hex ?? "#a855f7";
+}
+
+export function getPill(color: CategoryColor): string {
+  if (isHexColor(color)) return CUSTOM_COLOR_PILL;
   return COLOR_MAP.get(color)?.pill ?? COLOR_MAP.get("purple")!.pill;
+}
+
+/** 自定义色需在内联 style 注入 --cat-color；预设色用纯 Tailwind 类，返回 undefined */
+export function getPillStyle(color: CategoryColor): CSSProperties | undefined {
+  if (!isHexColor(color)) return undefined;
+  return { "--cat-color": color.toLowerCase() } as CSSProperties;
+}
+
+export const PRIORITY_OPTIONS: {
+  id: Priority;
+  label: string;
+  dot: string;
+  pill: string;
+}[] = [
+  {
+    id: "low",
+    label: "低",
+    dot: "bg-red-300",
+    pill: "bg-red-50 text-red-400 border border-red-200 dark:bg-red-400/10 dark:text-red-300 dark:border-red-400/20",
+  },
+  {
+    id: "medium",
+    label: "中",
+    dot: "bg-red-500",
+    pill: "bg-red-500/15 text-red-600 border border-red-300/50 dark:bg-red-500/20 dark:text-red-400 dark:border-red-500/30",
+  },
+  {
+    id: "high",
+    label: "高",
+    dot: "bg-red-600",
+    pill: "bg-red-600 text-white border border-red-700 dark:bg-red-600 dark:text-white dark:border-red-700",
+  },
+];
+
+const PRIORITY_SET = new Set<Priority>(PRIORITY_OPTIONS.map((p) => p.id));
+
+export function isValidPriority(v: unknown): v is Priority {
+  return typeof v === "string" && PRIORITY_SET.has(v as Priority);
+}
+
+export function getPriorityPill(p?: Priority): string {
+  const id = isValidPriority(p) ? p : "medium";
+  return PRIORITY_OPTIONS.find((o) => o.id === id)!.pill;
+}
+
+export function getPriorityLabel(p?: Priority): string {
+  const id = isValidPriority(p) ? p : "medium";
+  return PRIORITY_OPTIONS.find((o) => o.id === id)!.label;
+}
+
+export function normalizePriority(p: unknown): Priority {
+  return isValidPriority(p) ? (p as Priority) : "medium";
 }
 
 export const DEFAULT_CATEGORIES: Category[] = [
@@ -211,6 +304,16 @@ function isValidNote(n: unknown): n is Note {
   );
 }
 
+function normalizeNotes(list: unknown[]): Note[] {
+  return list.filter(isValidNote).map((n) => {
+    const o = n as Note;
+    return {
+      ...o,
+      priority: normalizePriority((o as unknown as Record<string, unknown>).priority),
+    };
+  });
+}
+
 function isValidWorkspace(w: unknown): w is Workspace {
   const o = w as Workspace;
   return (
@@ -226,7 +329,12 @@ function normalizeCategories(list: unknown[]): Category[] {
   return list.filter(isValidCategory).map((c) => ({
     ...c,
     icon: (ICON_OPTIONS.some((i) => i.key === c.icon) ? c.icon : "lightbulb") as IconKey,
-    color: (COLOR_MAP.has(c.color as ColorId) ? c.color : "purple") as ColorId,
+    // 预设 id 与合法 hex 都放行，其余回退默认紫
+    color: (
+      COLOR_MAP.has(c.color as ColorId) || isHexColor(c.color)
+        ? c.color
+        : "purple"
+    ) as CategoryColor,
   }));
 }
 
@@ -304,7 +412,7 @@ export function saveCategories(workspaceId: string, categories: Category[]) {
 
 export function loadNotes(workspaceId: string): Note[] {
   const stored = readJson<unknown[]>(wsKey(workspaceId, "notes"), []);
-  return Array.isArray(stored) ? stored.filter(isValidNote) : [];
+  return Array.isArray(stored) ? normalizeNotes(stored) : [];
 }
 
 export function saveNotes(workspaceId: string, notes: Note[]) {
@@ -320,12 +428,57 @@ export function saveLastTypeId(workspaceId: string, id: string) {
   writeJson(wsKey(workspaceId, "lastType"), id);
 }
 
+export type ViewMode = "list" | "kanban";
+
+export function loadViewMode(workspaceId: string): ViewMode {
+  const v = readJson<string>(wsKey(workspaceId, "viewMode"), "");
+  return v === "kanban" ? "kanban" : "list";
+}
+
+export function saveViewMode(workspaceId: string, mode: ViewMode) {
+  writeJson(wsKey(workspaceId, "viewMode"), mode);
+}
+
+/* ---------------- 搜索框光效 ---------------- */
+export type BeamVariant = "colorful" | "ocean" | "sunset" | "mono";
+export const BEAM_VARIANTS: BeamVariant[] = ["colorful", "ocean", "sunset", "mono"];
+export const BEAM_VARIANT_LABEL: Record<BeamVariant, string> = {
+  colorful: "Colorful 彩色",
+  ocean: "Ocean 海洋",
+  sunset: "Sunset 日落",
+  mono: "Mono 单色",
+};
+
+export interface BeamSettings {
+  variant: BeamVariant;
+  /** 动画周期秒数；越小越快 */
+  duration: number;
+  /** 是否启用光效；关闭则搜索框不包裹 BorderBeam */
+  enabled: boolean;
+}
+
+const KEY_BEAM = V2 + "beam";
+const DEFAULT_BEAM: BeamSettings = { variant: "colorful", duration: 3, enabled: true };
+
+export function loadBeamSettings(): BeamSettings {
+  const raw = readJson<Partial<BeamSettings>>(KEY_BEAM, {} as Partial<BeamSettings>);
+  const v = BEAM_VARIANTS.includes(raw.variant as BeamVariant) ? (raw.variant as BeamVariant) : DEFAULT_BEAM.variant;
+  const d = typeof raw.duration === "number" && Number.isFinite(raw.duration) ? Math.min(5, Math.max(0.6, raw.duration)) : DEFAULT_BEAM.duration;
+  const enabled = typeof raw.enabled === "boolean" ? raw.enabled : DEFAULT_BEAM.enabled;
+  return { variant: v, duration: d, enabled };
+}
+
+export function saveBeamSettings(s: BeamSettings) {
+  writeJson(KEY_BEAM, s);
+}
+
 export function deleteWorkspaceData(workspaceId: string) {
   if (typeof window === "undefined") return;
   try {
     localStorage.removeItem(wsKey(workspaceId, "categories"));
     localStorage.removeItem(wsKey(workspaceId, "notes"));
     localStorage.removeItem(wsKey(workspaceId, "lastType"));
+    localStorage.removeItem(wsKey(workspaceId, "viewMode"));
   } catch {}
 }
 

@@ -7,7 +7,6 @@ import {
   AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
-  AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
@@ -36,9 +35,6 @@ export function NoteDeleteConfirm({
       >
         <AlertDialogHeader>
           <AlertDialogTitle>删除这条便签？</AlertDialogTitle>
-          <AlertDialogDescription>
-            删除后无法恢复
-          </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>取消</AlertDialogCancel>
