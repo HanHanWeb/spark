@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CheckIcon, Settings2Icon, ZapIcon } from "lucide-react";
+import { CheckIcon, Settings2Icon, XIcon, ZapIcon } from "lucide-react";
 import { toast } from "sonner";
 import {
   createId,
@@ -52,6 +52,7 @@ import { WelcomeStepper } from "@/components/spark/welcome-stepper";
 import { UserMenu } from "@/components/spark/user-menu";
 import { useCloudSync } from "@/hooks/use-cloud-sync";
 import { apiPull, type CloudStatePayload, type CloudUser } from "@/lib/cloud";
+import { cn } from "@/lib/utils";
 import Image from "next/image";
 
 const ALL = "all";
@@ -454,8 +455,20 @@ export function SparkApp() {
 
   function handleDelete(id: string) {
     const nextNotes = notes.filter((n) => n.id !== id);
-    if (currentId) saveNotes(currentId, nextNotes);
+    if (currentId) saveNotes(currentId, nextNotes); // 立即落库
     setNotes(nextNotes);
+    pushSoon();
+  }
+
+  /** 勾选为「完成」切换开关；完成态随同步通道走 done 字段 */
+  function handleToggleDone(noteId: string) {
+    setNotes((prev) => {
+      const next = prev.map((n) =>
+        n.id === noteId ? { ...n, done: !n.done } : n
+      );
+      if (currentId) saveNotes(currentId, next);
+      return next;
+    });
     pushSoon();
   }
 
@@ -621,31 +634,58 @@ export function SparkApp() {
           <ul className="divide-y mt-4 overflow-hidden rounded-xl border bg-card shadow-sm">
             {visibleNotes.map((note) => {
               const cat = categoryMap.get(note.categoryId);
-              return cat ? (
+              if (!cat) return null;
+              const done = note.done === true;
+              return (
                 <li
                   key={note.id}
-                  className="group flex items-center gap-3 px-3 py-2.5"
+                  className={cn(
+                    "group flex items-center gap-3 px-3 py-2.5 transition-opacity",
+                    done && "opacity-55"
+                  )}
                 >
                   <CategoryChip category={cat} />
                   <div className="min-w-0 flex-1">
-                    <p className="min-w-0 text-sm leading-relaxed break-words whitespace-pre-wrap">
+                    <p
+                      className={cn(
+                        "min-w-0 text-sm leading-relaxed break-words whitespace-pre-wrap",
+                        done && "line-through decoration-muted-foreground/60"
+                      )}
+                    >
                       {note.content}
                     </p>
                   </div>
-                  <NoteDeleteConfirm
-                    onDelete={() => handleDelete(note.id)}
-                  >
+                  <div className="flex shrink-0 items-center">
                     <Button
                       variant="ghost"
                       size="icon-xs"
-                      aria-label="删除这条便签"
-                      className="-mr-1 shrink-0 text-muted-foreground opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 hover:text-destructive"
+                      aria-label={done ? "标记为未完成" : "标记为已完成"}
+                      title={done ? "标记为未完成" : "标记为已完成"}
+                      onClick={() => handleToggleDone(note.id)}
+                      className={cn(
+                        "opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100",
+                        done
+                          ? "text-primary"
+                          : "text-muted-foreground hover:text-foreground"
+                      )}
                     >
                       <CheckIcon />
                     </Button>
-                  </NoteDeleteConfirm>
+                    <NoteDeleteConfirm
+                      onDelete={() => handleDelete(note.id)}
+                    >
+                      <Button
+                        variant="ghost"
+                        size="icon-xs"
+                        aria-label="删除这条便签"
+                        className="-mr-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:text-destructive"
+                      >
+                        <XIcon />
+                      </Button>
+                    </NoteDeleteConfirm>
+                  </div>
                 </li>
-              ) : null;
+              );
             })}
           </ul>
         )}

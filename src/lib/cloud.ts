@@ -18,7 +18,10 @@ export interface CloudStatePayload {
     string,
     {
       categories: Pick<Category, "id" | "name" | "icon" | "color">[];
-      notes: Pick<Note, "id" | "categoryId" | "content" | "createdAt">[];
+      notes: Pick<
+        Note,
+        "id" | "categoryId" | "content" | "createdAt" | "done"
+      >[];
     }
   >;
 }

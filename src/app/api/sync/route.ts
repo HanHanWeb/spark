@@ -14,6 +14,7 @@ interface WorkspaceSnapshot {
     categoryId: string;
     content: string;
     createdAt: number;
+    done?: boolean;
   }[];
 }
 
@@ -59,7 +60,7 @@ export async function GET() {
         args: [ws.id],
       }),
       db.execute({
-        sql: "SELECT id, category_id, content, created_at FROM notes WHERE workspace_id = ? ORDER BY created_at DESC",
+        sql: "SELECT id, category_id, content, created_at, done FROM notes WHERE workspace_id = ? ORDER BY created_at DESC",
         args: [ws.id],
       }),
     ]);
@@ -75,6 +76,7 @@ export async function GET() {
         categoryId: String(r.category_id),
         content: String(r.content),
         createdAt: Number(r.created_at),
+        done: Number(r.done) === 1,
       })),
     };
   }
@@ -138,8 +140,8 @@ export async function PUT(req: Request) {
     if (Array.isArray(snap.notes)) {
       for (const n of snap.notes) {
         stmts.push({
-          sql: "INSERT INTO notes (id, workspace_id, category_id, content, created_at) VALUES (?, ?, ?, ?, ?)",
-          args: [n.id, ws.id, n.categoryId, n.content, n.createdAt],
+          sql: "INSERT INTO notes (id, workspace_id, category_id, content, created_at, done) VALUES (?, ?, ?, ?, ?, ?)",
+          args: [n.id, ws.id, n.categoryId, n.content, n.createdAt, n.done ? 1 : 0],
         });
       }
     }

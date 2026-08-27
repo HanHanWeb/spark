@@ -53,7 +53,15 @@ export function ensureSchema(): Promise<void> {
   if (!schemaPromise) {
     schemaPromise = getDb()
       .batch(DDL, "write")
-      .then(() => undefined);
+      .then(async () => {
+        // 老库缺少完成态列：ALTER 无法重复执行，先探测再加
+        const cols = await getDb().execute("PRAGMA table_info(notes)");
+        if (!cols.rows.some((r) => String(r.name) === "done")) {
+          await getDb().execute(
+            "ALTER TABLE notes ADD COLUMN done INTEGER NOT NULL DEFAULT 0"
+          );
+        }
+      });
   }
   return schemaPromise;
 }

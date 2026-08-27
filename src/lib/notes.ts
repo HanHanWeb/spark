@@ -50,6 +50,8 @@ export interface Note {
   categoryId: string;
   content: string;
   createdAt: number;
+  /** 完成态；旧数据缺省视为未完成 */
+  done?: boolean;
 }
 
 export interface Workspace {
