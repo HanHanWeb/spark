@@ -241,21 +241,27 @@ export const DEFAULT_CATEGORIES: Category[] = [
   { id: "diary", name: "日记", icon: "bookOpen", color: "green" },
 ];
 
-/* ---------------- storage ---------------- */
+/* ---------------- 旧版本 localStorage 数据的一次性迁移 ---------------- */
 
-const V1 = "spark.v1."; // 旧版全局键（用于迁移）
-const V2 = "spark.v2."; // 新版：工作区列表全局存，业务数据按工作区隔离
-const KEY_WORKSPACES = V2 + "workspaces";
-const KEY_CURRENT_WS = V2 + "currentWorkspace";
+const V1 = "spark.v1.";
+const V2 = "spark.v2.";
 
-function wsKey(workspaceId: string, key: string): string {
-  return `${V2}ws.${workspaceId}.${key}`;
+export interface LegacyLocalWorkspace extends Workspace {
+  viewMode?: ViewMode;
+  lastTypeId?: string | null;
 }
 
-function readJson<T>(storageKey: string, fallback: T): T {
+export interface LegacyLocalData {
+  currentWorkspaceId: string | null;
+  workspaces: LegacyLocalWorkspace[];
+  state: Record<string, { categories: Category[]; notes: Note[] }>;
+  beam?: BeamSettings;
+}
+
+function legacyReadJson<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;
   try {
-    const raw = window.localStorage.getItem(storageKey);
+    const raw = window.localStorage.getItem(key);
     if (!raw) return fallback;
     return JSON.parse(raw) as T;
   } catch {
@@ -263,24 +269,96 @@ function readJson<T>(storageKey: string, fallback: T): T {
   }
 }
 
-/** 与 readJson 不同：键不存在时返回 null，用于区分“空数据”与“从未写入” */
-function readJsonOrNull(storageKey: string): unknown | null {
+/**
+ * 读取旧版本存放在 localStorage 的全部业务数据（v2 为主，v1 兜底）。
+ * 只读取不删除；待合并结果成功上传云端后调用 clearLegacyLocalData()，
+ * 避免推送失败时本地数据被提前清掉。
+ */
+export function readLegacyLocalData(): LegacyLocalData | null {
   if (typeof window === "undefined") return null;
-  try {
-    const raw = window.localStorage.getItem(storageKey);
-    if (raw === null) return null;
-    return JSON.parse(raw);
-  } catch {
-    return null;
+
+  let workspaces: LegacyLocalWorkspace[] = (() => {
+    const stored = legacyReadJson<unknown[]>(V2 + "workspaces", []);
+    const list = Array.isArray(stored) ? stored.filter(isValidWorkspace) : [];
+    return list.map((w) => ({
+      ...w,
+      viewMode:
+        legacyReadJson<string>(`${V2}ws.${w.id}.viewMode`, "") === "kanban"
+          ? ("kanban" as ViewMode)
+          : ("list" as ViewMode),
+      lastTypeId: legacyReadJson<string>(`${V2}ws.${w.id}.lastType`, "") || null,
+    }));
+  })();
+
+  // 从未以 v2 格式落库、但存在 v1 全局数据：按旧迁移规则装进一个默认工作区
+  if (workspaces.length === 0) {
+    const legacyNotes = legacyReadJson<unknown[]>(V1 + "notes", []);
+    const notes = Array.isArray(legacyNotes)
+      ? legacyNotes.filter(isValidNote)
+      : [];
+    if (notes.length === 0) return null;
+    workspaces = [
+      {
+        id: `migrated-${Date.now().toString(36)}`,
+        name: "默认工作区",
+        createdAt: Date.now(),
+      },
+    ];
+    const legacyCats = legacyReadJson<unknown[]>(V1 + "categories", []);
+    const custom = Array.isArray(legacyCats)
+      ? normalizeCategories(legacyCats)
+      : [];
+    const cats = DEFAULT_CATEGORIES.map((c) => ({ ...c }));
+    for (const c of custom) {
+      if (!cats.some((d) => d.id === c.id)) cats.push(c);
+    }
+    const data: LegacyLocalData = {
+      currentWorkspaceId: workspaces[0].id,
+      workspaces,
+      state: { [workspaces[0].id]: { categories: cats, notes } },
+    };
+    return data;
   }
+
+  const state: LegacyLocalData["state"] = {};
+  for (const ws of workspaces) {
+    const rawCats = legacyReadJson<unknown>(`${V2}ws.${ws.id}.categories`, null);
+    // 从未写入过分类的工作区播种默认分类
+    const cats =
+      rawCats === null || !Array.isArray(rawCats)
+        ? DEFAULT_CATEGORIES.map((c) => ({ ...c }))
+        : normalizeCategories(rawCats);
+    const rawNotes = legacyReadJson<unknown[]>(`${V2}ws.${ws.id}.notes`, []);
+    state[ws.id] = {
+      categories: cats,
+      notes: Array.isArray(rawNotes) ? normalizeNotes(rawNotes) : [],
+    };
+  }
+
+  const rawCurrent = legacyReadJson<string>(V2 + "currentWorkspace", "");
+  const currentWorkspaceId =
+    rawCurrent && workspaces.some((w) => w.id === rawCurrent)
+      ? rawCurrent
+      : workspaces[0].id;
+
+  const rawBeam = legacyReadJson<Partial<BeamSettings>>(V2 + "beam", {});
+  const beam = normalizeBeam(rawBeam);
+
+  return { currentWorkspaceId, workspaces, state, beam };
 }
 
-function writeJson(storageKey: string, value: unknown) {
+/** 迁移数据成功上传云端后调用，清除旧 localStorage 键（主题键不受影响） */
+export function clearLegacyLocalData() {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(storageKey, JSON.stringify(value));
+    const doomed: string[] = [];
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const key = window.localStorage.key(i);
+      if (key && (key.startsWith(V1) || key.startsWith(V2))) doomed.push(key);
+    }
+    doomed.forEach((k) => window.localStorage.removeItem(k));
   } catch {
-    // 存储不可用时静默降级，不影响使用
+    // 存储不可用时静默降级
   }
 }
 
@@ -304,7 +382,7 @@ function isValidNote(n: unknown): n is Note {
   );
 }
 
-function normalizeNotes(list: unknown[]): Note[] {
+export function normalizeNotes(list: unknown[]): Note[] {
   return list.filter(isValidNote).map((n) => {
     const o = n as Note;
     return {
@@ -313,7 +391,6 @@ function normalizeNotes(list: unknown[]): Note[] {
     };
   });
 }
-
 function isValidWorkspace(w: unknown): w is Workspace {
   const o = w as Workspace;
   return (
@@ -325,7 +402,7 @@ function isValidWorkspace(w: unknown): w is Workspace {
   );
 }
 
-function normalizeCategories(list: unknown[]): Category[] {
+export function normalizeCategories(list: unknown[]): Category[] {
   return list.filter(isValidCategory).map((c) => ({
     ...c,
     icon: (ICON_OPTIONS.some((i) => i.key === c.icon) ? c.icon : "lightbulb") as IconKey,
@@ -338,106 +415,7 @@ function normalizeCategories(list: unknown[]): Category[] {
   }));
 }
 
-/* ---------------- workspace-level ---------------- */
-
-export function loadWorkspaces(): Workspace[] {
-  const stored = readJson<unknown[]>(KEY_WORKSPACES, []);
-  return Array.isArray(stored) ? stored.filter(isValidWorkspace) : [];
-}
-
-export function saveWorkspaces(workspaces: Workspace[]) {
-  writeJson(KEY_WORKSPACES, workspaces);
-}
-
-export function loadCurrentWorkspaceId(): string | null {
-  const v = readJson<string>(KEY_CURRENT_WS, "");
-  return v || null;
-}
-
-export function saveCurrentWorkspaceId(id: string | null) {
-  if (id === null) {
-    if (typeof window !== "undefined") {
-      try {
-        window.localStorage.removeItem(KEY_CURRENT_WS);
-      } catch {}
-    }
-    return;
-  }
-  writeJson(KEY_CURRENT_WS, id);
-}
-
-/** v1 全局数据迁移：把旧便签搬到首个工作区。返回是否有需要迁移的实质数据 */
-export function migrateLegacyData(targetWorkspaceId: string): boolean {
-  if (typeof window === "undefined") return false;
-  const legacyNotes = readJson<unknown[]>(V1 + "notes", []);
-  const legacyCats = readJson<unknown[]>(V1 + "categories", []);
-  const legacyLastType = readJson<string>(V1 + "lastType", "");
-  const notes = Array.isArray(legacyNotes)
-    ? legacyNotes.filter(isValidNote)
-    : [];
-  if (notes.length === 0) return false;
-
-  const defaults = [...DEFAULT_CATEGORIES];
-  const custom = normalizeCategories(Array.isArray(legacyCats) ? legacyCats : []);
-  for (const c of custom) {
-    if (!defaults.some((d) => d.id === c.id)) defaults.push(c);
-  }
-  saveCategories(targetWorkspaceId, defaults);
-  saveNotes(targetWorkspaceId, notes);
-  if (legacyLastType && defaults.some((c) => c.id === legacyLastType)) {
-    saveLastTypeId(targetWorkspaceId, legacyLastType);
-  }
-  try {
-    [V1 + "notes", V1 + "categories", V1 + "lastType"].forEach((k) =>
-      window.localStorage.removeItem(k)
-    );
-  } catch {}
-  return true;
-}
-
-/* ---------------- workspace-scoped data ---------------- */
-
-export function loadCategories(workspaceId: string): Category[] {
-  const raw = readJsonOrNull(wsKey(workspaceId, "categories"));
-  // 该工作区从未写入过分类时才播种默认分类；用户删除过的分类不会被重新加回
-  if (raw === null || !Array.isArray(raw)) {
-    return DEFAULT_CATEGORIES.map((c) => ({ ...c }));
-  }
-  return normalizeCategories(raw);
-}
-
-export function saveCategories(workspaceId: string, categories: Category[]) {
-  writeJson(wsKey(workspaceId, "categories"), categories);
-}
-
-export function loadNotes(workspaceId: string): Note[] {
-  const stored = readJson<unknown[]>(wsKey(workspaceId, "notes"), []);
-  return Array.isArray(stored) ? normalizeNotes(stored) : [];
-}
-
-export function saveNotes(workspaceId: string, notes: Note[]) {
-  writeJson(wsKey(workspaceId, "notes"), notes);
-}
-
-export function loadLastTypeId(workspaceId: string): string | null {
-  const v = readJson<string>(wsKey(workspaceId, "lastType"), "");
-  return v || null;
-}
-
-export function saveLastTypeId(workspaceId: string, id: string) {
-  writeJson(wsKey(workspaceId, "lastType"), id);
-}
-
 export type ViewMode = "list" | "kanban";
-
-export function loadViewMode(workspaceId: string): ViewMode {
-  const v = readJson<string>(wsKey(workspaceId, "viewMode"), "");
-  return v === "kanban" ? "kanban" : "list";
-}
-
-export function saveViewMode(workspaceId: string, mode: ViewMode) {
-  writeJson(wsKey(workspaceId, "viewMode"), mode);
-}
 
 /* ---------------- 搜索框光效 ---------------- */
 export type BeamVariant = "colorful" | "ocean" | "sunset" | "mono";
@@ -457,29 +435,22 @@ export interface BeamSettings {
   enabled: boolean;
 }
 
-const KEY_BEAM = V2 + "beam";
-const DEFAULT_BEAM: BeamSettings = { variant: "colorful", duration: 3, enabled: true };
+export const DEFAULT_BEAM: BeamSettings = { variant: "colorful", duration: 3, enabled: true };
 
-export function loadBeamSettings(): BeamSettings {
-  const raw = readJson<Partial<BeamSettings>>(KEY_BEAM, {} as Partial<BeamSettings>);
-  const v = BEAM_VARIANTS.includes(raw.variant as BeamVariant) ? (raw.variant as BeamVariant) : DEFAULT_BEAM.variant;
-  const d = typeof raw.duration === "number" && Number.isFinite(raw.duration) ? Math.min(5, Math.max(0.6, raw.duration)) : DEFAULT_BEAM.duration;
-  const enabled = typeof raw.enabled === "boolean" ? raw.enabled : DEFAULT_BEAM.enabled;
-  return { variant: v, duration: d, enabled };
-}
-
-export function saveBeamSettings(s: BeamSettings) {
-  writeJson(KEY_BEAM, s);
-}
-
-export function deleteWorkspaceData(workspaceId: string) {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.removeItem(wsKey(workspaceId, "categories"));
-    localStorage.removeItem(wsKey(workspaceId, "notes"));
-    localStorage.removeItem(wsKey(workspaceId, "lastType"));
-    localStorage.removeItem(wsKey(workspaceId, "viewMode"));
-  } catch {}
+/** 光效设置归一：字段缺失或非法时回落默认值 */
+export function normalizeBeam(raw: Partial<BeamSettings> | undefined | null): BeamSettings {
+  if (!raw) return { ...DEFAULT_BEAM };
+  return {
+    variant: BEAM_VARIANTS.includes(raw.variant as BeamVariant)
+      ? (raw.variant as BeamVariant)
+      : DEFAULT_BEAM.variant,
+    duration:
+      typeof raw.duration === "number" && Number.isFinite(raw.duration)
+        ? Math.min(5, Math.max(0.6, raw.duration))
+        : DEFAULT_BEAM.duration,
+    enabled:
+      typeof raw.enabled === "boolean" ? raw.enabled : DEFAULT_BEAM.enabled,
+  };
 }
 
 /* ---------------- utils ---------------- */

@@ -54,13 +54,39 @@ export function ensureSchema(): Promise<void> {
     schemaPromise = getDb()
       .batch(DDL, "write")
       .then(async () => {
-        // 老库缺少完成态列：ALTER 无法重复执行，先探测再加
-        const cols = await getDb().execute("PRAGMA table_info(notes)");
-        if (!cols.rows.some((r) => String(r.name) === "done")) {
-          await getDb().execute(
-            "ALTER TABLE notes ADD COLUMN done INTEGER NOT NULL DEFAULT 0"
-          );
-        }
+        // ALTER ADD COLUMN 不可重复执行，逐列探测后再补
+        const db = getDb();
+        const ensureColumn = async (table: string, column: string, ddl: string) => {
+          const cols = await db.execute(`PRAGMA table_info(${table})`);
+          if (!cols.rows.some((r) => String(r.name) === column)) {
+            await db.execute(ddl);
+          }
+        };
+        await ensureColumn(
+          "notes",
+          "done",
+          "ALTER TABLE notes ADD COLUMN done INTEGER NOT NULL DEFAULT 0"
+        );
+        await ensureColumn(
+          "notes",
+          "priority",
+          "ALTER TABLE notes ADD COLUMN priority TEXT"
+        );
+        await ensureColumn(
+          "workspaces",
+          "view_mode",
+          "ALTER TABLE workspaces ADD COLUMN view_mode TEXT"
+        );
+        await ensureColumn(
+          "workspaces",
+          "last_type_id",
+          "ALTER TABLE workspaces ADD COLUMN last_type_id TEXT"
+        );
+        await ensureColumn(
+          "users",
+          "prefs",
+          "ALTER TABLE users ADD COLUMN prefs TEXT"
+        );
       });
   }
   return schemaPromise;

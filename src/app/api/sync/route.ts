@@ -15,14 +15,31 @@ interface WorkspaceSnapshot {
     content: string;
     createdAt: number;
     done?: boolean;
+    priority?: string;
   }[];
+}
+
+export interface CloudPrefs {
+  beam?: unknown;
 }
 
 interface SyncPayload {
   currentWorkspaceId: string | null;
-  workspaces: { id: string; name: string; createdAt?: number }[];
+  workspaces: {
+    id: string;
+    name: string;
+    createdAt?: number;
+    viewMode?: string;
+    lastTypeId?: string | null;
+  }[];
   state: Record<string, WorkspaceSnapshot>;
+  prefs?: CloudPrefs;
 }
+
+const PRIORITIES = new Set(["low", "medium", "high"]);
+const VIEW_MODES = new Set(["list", "kanban"]);
+/** prefs 为 JSON 文本入库，限制大小防滥用 */
+const MAX_PREFS_LENGTH = 8192;
 
 export async function GET() {
   const user = await getSessionUser();
@@ -32,7 +49,7 @@ export async function GET() {
   const db = getDb();
 
   const userRes = await db.execute({
-    sql: "SELECT current_workspace_id FROM users WHERE id = ?",
+    sql: "SELECT current_workspace_id, prefs FROM users WHERE id = ?",
     args: [user.id],
   });
   if (userRes.rows.length === 0) {
@@ -42,14 +59,22 @@ export async function GET() {
     userRes.rows[0].current_workspace_id == null
       ? null
       : String(userRes.rows[0].current_workspace_id);
+  let prefs: CloudPrefs | null = null;
+  if (userRes.rows[0].prefs != null) {
+    try {
+      prefs = JSON.parse(String(userRes.rows[0].prefs)) as CloudPrefs;
+    } catch {}
+  }
 
   const wsRes = await db.execute({
-    sql: "SELECT id, name, created_at FROM workspaces WHERE user_id = ? ORDER BY created_at",
+    sql: "SELECT id, name, created_at, view_mode, last_type_id FROM workspaces WHERE user_id = ? ORDER BY created_at",
     args: [user.id],
   });
   const workspaces = wsRes.rows.map((r) => ({
     id: String(r.id),
     name: String(r.name),
+    viewMode: r.view_mode == null ? undefined : String(r.view_mode),
+    lastTypeId: r.last_type_id == null ? null : String(r.last_type_id),
   }));
 
   const state: Record<string, WorkspaceSnapshot> = {};
@@ -60,7 +85,7 @@ export async function GET() {
         args: [ws.id],
       }),
       db.execute({
-        sql: "SELECT id, category_id, content, created_at, done FROM notes WHERE workspace_id = ? ORDER BY created_at DESC",
+        sql: "SELECT id, category_id, content, created_at, done, priority FROM notes WHERE workspace_id = ? ORDER BY created_at DESC",
         args: [ws.id],
       }),
     ]);
@@ -77,11 +102,12 @@ export async function GET() {
         content: String(r.content),
         createdAt: Number(r.created_at),
         done: Number(r.done) === 1,
+        priority: r.priority == null ? undefined : String(r.priority),
       })),
     };
   }
 
-  return NextResponse.json({ currentWorkspaceId, workspaces, state });
+  return NextResponse.json({ currentWorkspaceId, workspaces, state, prefs });
 }
 
 export async function PUT(req: Request) {
@@ -121,9 +147,17 @@ export async function PUT(req: Request) {
 
   for (const ws of body.workspaces) {
     if (!ws || typeof ws.id !== "string" || typeof ws.name !== "string") continue;
+    const viewMode =
+      typeof ws.viewMode === "string" && VIEW_MODES.has(ws.viewMode)
+        ? ws.viewMode
+        : null;
+    const lastTypeId =
+      typeof ws.lastTypeId === "string" && ws.lastTypeId.length > 0
+        ? ws.lastTypeId
+        : null;
     stmts.push({
-      sql: "INSERT INTO workspaces (id, user_id, name, created_at) VALUES (?, ?, ?, ?)",
-      args: [ws.id, user.id, ws.name, ws.createdAt ?? Date.now()],
+      sql: "INSERT INTO workspaces (id, user_id, name, created_at, view_mode, last_type_id) VALUES (?, ?, ?, ?, ?, ?)",
+      args: [ws.id, user.id, ws.name, ws.createdAt ?? Date.now(), viewMode, lastTypeId],
     });
 
     const snap = body.state[ws.id];
@@ -131,6 +165,7 @@ export async function PUT(req: Request) {
 
     if (Array.isArray(snap.categories)) {
       for (const c of snap.categories) {
+        if (!c || typeof c.id !== "string") continue;
         stmts.push({
           sql: "INSERT INTO categories (id, workspace_id, name, icon, color) VALUES (?, ?, ?, ?, ?)",
           args: [c.id, ws.id, c.name, c.icon, c.color],
@@ -139,9 +174,22 @@ export async function PUT(req: Request) {
     }
     if (Array.isArray(snap.notes)) {
       for (const n of snap.notes) {
+        if (!n || typeof n.id !== "string") continue;
+        const priority =
+          typeof n.priority === "string" && PRIORITIES.has(n.priority)
+            ? n.priority
+            : null;
         stmts.push({
-          sql: "INSERT INTO notes (id, workspace_id, category_id, content, created_at, done) VALUES (?, ?, ?, ?, ?, ?)",
-          args: [n.id, ws.id, n.categoryId, n.content, n.createdAt, n.done ? 1 : 0],
+          sql: "INSERT INTO notes (id, workspace_id, category_id, content, created_at, done, priority) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          args: [
+            n.id,
+            ws.id,
+            n.categoryId,
+            n.content,
+            n.createdAt,
+            n.done ? 1 : 0,
+            priority,
+          ],
         });
       }
     }
@@ -149,10 +197,15 @@ export async function PUT(req: Request) {
 
   await db.batch(stmts, "write");
 
+  const prefs =
+    body.prefs && typeof body.prefs === "object"
+      ? JSON.stringify(body.prefs)
+      : null;
   await db.execute({
-    sql: "UPDATE users SET current_workspace_id = ? WHERE id = ?",
+    sql: "UPDATE users SET current_workspace_id = ?, prefs = ? WHERE id = ?",
     args: [
       typeof body.currentWorkspaceId === "string" ? body.currentWorkspaceId : null,
+      prefs != null && prefs.length <= MAX_PREFS_LENGTH ? prefs : null,
       user.id,
     ],
   });

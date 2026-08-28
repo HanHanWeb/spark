@@ -1,4 +1,4 @@
-import type { Category, Note } from "@/lib/notes";
+import type { BeamSettings, Category, Note, ViewMode } from "@/lib/notes";
 
 export interface CloudUser {
   id: string;
@@ -9,18 +9,26 @@ export interface CloudWorkspaceMeta {
   id: string;
   name: string;
   createdAt?: number;
+  /** 每工作区 UI 偏好，随同步通道持久化 */
+  viewMode?: ViewMode;
+  lastTypeId?: string | null;
+}
+
+export interface CloudPrefs {
+  beam?: BeamSettings;
 }
 
 export interface CloudStatePayload {
   currentWorkspaceId: string | null;
   workspaces: CloudWorkspaceMeta[];
+  prefs?: CloudPrefs;
   state: Record<
     string,
     {
       categories: Pick<Category, "id" | "name" | "icon" | "color">[];
       notes: Pick<
         Note,
-        "id" | "categoryId" | "content" | "createdAt" | "done"
+        "id" | "categoryId" | "content" | "createdAt" | "done" | "priority"
       >[];
     }
   >;

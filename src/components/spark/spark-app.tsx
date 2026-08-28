@@ -12,23 +12,13 @@ import {
 import { toast } from "sonner";
 import {
   createId,
-  deleteWorkspaceData,
-  loadBeamSettings,
-  loadCategories,
-  loadLastTypeId,
-  loadNotes,
-  loadCurrentWorkspaceId,
-  loadViewMode,
-  loadWorkspaces,
-  migrateLegacyData,
   nowMs,
-  saveBeamSettings,
-  saveCategories,
-  saveCurrentWorkspaceId,
-  saveLastTypeId,
-  saveNotes,
-  saveViewMode,
-  saveWorkspaces,
+  clearLegacyLocalData,
+  readLegacyLocalData,
+  normalizeBeam,
+  normalizeCategories,
+  normalizeNotes,
+  DEFAULT_BEAM,
   DEFAULT_CATEGORIES,
   normalizePriority,
   type BeamSettings,
@@ -75,6 +65,14 @@ import Image from "next/image";
 
 const ALL = "all";
 
+/** 单个工作区的会话内数据快照；视图偏好随同步通道上云 */
+interface WsData {
+  categories: Category[];
+  notes: Note[];
+  viewMode?: ViewMode;
+  lastTypeId?: string | null;
+}
+
 export function SparkApp() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
@@ -83,7 +81,7 @@ export function SparkApp() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
   const [typeId, setTypeId] = useState<string>("");
-  /** 已完成加载的工作区 id；用于拦截切换瞬间的旧数据写入 */
+  /** 已完成装载的工作区 id；装载完成前不写缓存、不触发推送 */
   const [loadedFor, setLoadedFor] = useState<string | null>(null);
 
   const [content, setContent] = useState("");
@@ -91,14 +89,14 @@ export function SparkApp() {
   const [tab, setTab] = useState<string>(ALL);
   const [tabDirection, setTabDirection] = useState(1);
   const [viewMode, setViewMode] = useState<ViewMode>("list");
-  const [beam, setBeam] = useState<BeamSettings>(() => {
-    // SSR 时读取不到，客户端挂载后会纠正
-    try {
-      return loadBeamSettings();
-    } catch {
-      return { variant: "colorful", duration: 3, enabled: true };
-    }
-  });
+  const [beam, setBeam] = useState<BeamSettings>({ ...DEFAULT_BEAM });
+
+  /** 全部工作区的数据缓存（云端为数据源，此处仅是会话内镜像） */
+  const wsDataRef = useRef<Record<string, WsData>>({});
+  /** 各工作区条数统计的 state 镜像（渲染期不可读 ref，统计走 state） */
+  const [wsCounts, setWsCounts] = useState<
+    Record<string, { noteCount: number; categoryCount: number }>
+  >({});
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] =
@@ -134,34 +132,56 @@ export function SparkApp() {
   const switchSeqRef = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  function stashCounts(id: string, d: WsData | undefined) {
+    setWsCounts((prev) => ({
+      ...prev,
+      [id]: {
+        noteCount: d?.notes.length ?? 0,
+        categoryCount: d?.categories.length ?? 0,
+      },
+    }));
+  }
+
+  /** 当前工作区数据写回会话缓存；必须与 setState 同步调用，保证推送拿到最新值 */
+  function stashCurrent(patch: Partial<WsData>) {
+    if (!currentId) return;
+    const d = wsDataRef.current[currentId] ?? {
+      categories: [],
+      notes: [],
+      lastTypeId: null,
+    };
+    const merged = { ...d, ...patch };
+    wsDataRef.current[currentId] = merged;
+    stashCounts(currentId, merged);
+  }
+
   function buildPayload(): CloudStatePayload {
-    // 工作区列表与当前指针优先以已落库的存储为准，避免删除等同步写入后闭包仍持有旧值
-    let effectiveWorkspaces = workspaces;
-    let effectiveCurrentId = currentId;
-    try {
-      const fromStorage = loadWorkspaces();
-      if (fromStorage.length !== workspaces.length) effectiveWorkspaces = fromStorage;
-      const storedCurrent = loadCurrentWorkspaceId();
-      if (storedCurrent !== currentId) effectiveCurrentId = storedCurrent;
-    } catch {}
     const state: CloudStatePayload["state"] = {};
-    for (const ws of effectiveWorkspaces) {
-      state[ws.id] = {
-        categories: loadCategories(ws.id),
-        notes: loadNotes(ws.id),
-      };
-    }
-    if (effectiveCurrentId && !state[effectiveCurrentId]) {
-      state[effectiveCurrentId] = { categories, notes };
-    }
+    const workspacesMeta: CloudStatePayload["workspaces"] = workspaces.map(
+      (w) => {
+        const isCurrent = w.id === currentId;
+        const d = isCurrent
+          ? { categories, notes, viewMode, lastTypeId: typeId || null }
+          : (wsDataRef.current[w.id] ?? {
+              categories: [],
+              notes: [],
+              lastTypeId: null,
+            });
+        state[w.id] = { categories: d.categories, notes: d.notes };
+        return {
+          id: w.id,
+          name: w.name,
+          createdAt: w.createdAt,
+          viewMode: d.viewMode,
+          lastTypeId: d.lastTypeId,
+        };
+      }
+    );
     return {
-      currentWorkspaceId: effectiveCurrentId,
-      workspaces: effectiveWorkspaces.map((w) => ({
-        id: w.id,
-        name: w.name,
-        createdAt: w.createdAt,
-      })),
+      currentWorkspaceId: currentId,
+      workspaces: workspacesMeta,
       state,
+      prefs: { beam },
     };
   }
 
@@ -178,15 +198,31 @@ export function SparkApp() {
     const remoteIds = new Set(remoteList.map((w) => w.id));
     const localOnly = workspaces.filter((w) => !remoteIds.has(w.id));
     const merged = [...remoteList, ...localOnly];
-
     setWorkspaces(merged);
-    saveWorkspaces(merged);
-    // 写入远端各工作区快照，作为本地缓存
-    for (const [wsId, snap] of Object.entries(payload.state)) {
-      if (!wsId || !snap) continue;
-      saveCategories(wsId, snap.categories as Category[]);
-      saveNotes(wsId, snap.notes as Note[]);
+
+    // 远端快照整体替换缓存；本地独有工作区沿用原数据
+    const nextData: Record<string, WsData> = {};
+    for (const w of merged) {
+      const snap = payload.state[w.id];
+      if (snap) {
+        const meta = payload.workspaces.find((m) => m.id === w.id);
+        nextData[w.id] = {
+          categories: normalizeCategories(snap.categories),
+          notes: normalizeNotes(snap.notes),
+          viewMode: meta?.viewMode,
+          lastTypeId: meta?.lastTypeId ?? null,
+        };
+      } else {
+        nextData[w.id] =
+          wsDataRef.current[w.id] ?? { categories: [], notes: [], lastTypeId: null };
+      }
     }
+    wsDataRef.current = nextData;
+    for (const w of merged) stashCounts(w.id, nextData[w.id]);
+
+    const remoteBeam = payload.prefs?.beam;
+    if (remoteBeam) setBeam(normalizeBeam(remoteBeam));
+
     const fallbackTarget = merged[0]?.id ?? null;
     let target =
       preferredCurrentId !== undefined
@@ -195,25 +231,20 @@ export function SparkApp() {
     if (target && !merged.some((w) => w.id === target)) {
       target = fallbackTarget;
     }
-    if (target && target !== currentId) {
-      setCurrentId(target);
-      saveCurrentWorkspaceId(target);
-    }
-    if (target) {
-      const snap = payload.state[target];
-      if (snap) {
-        setLoadedFor(null); // 避免持久化 effect 用旧值覆盖
-        queueMicrotask(() => {
-          setCategories(snap.categories as Category[]);
-          setNotes(
-            [...(snap.notes as Note[])].sort((a, b) => b.createdAt - a.createdAt)
-          );
-          setTypeId(snap.categories[0]?.id ?? "");
-          setTab(ALL);
-          setContent("");
-          setLoadedFor(target);
-        });
+    if (target !== currentId) {
+      // 目标工作区变化：交给 currentId 加载 effect 从缓存装载（含视图偏好）
+      setCurrentId(target || null);
+      if (!target) {
+        // 云端工作区已被全部删除：清空当前数据，回到工作区引导页
+        setCategories([]);
+        setNotes([]);
+        setLoadedFor(null);
       }
+    } else if (target) {
+      // 同工作区刷新：仅合并数据，保留用户正在看的分类、搜索与视图状态
+      const d = nextData[target];
+      setCategories(d.categories);
+      setNotes([...d.notes].sort((a, b) => b.createdAt - a.createdAt));
     }
   }
 
@@ -221,6 +252,8 @@ export function SparkApp() {
     buildPayload,
     applyRemote,
     onAuthResolved: handleAuthResolved,
+    readLegacy: readLegacyLocalData,
+    clearLegacy: clearLegacyLocalData,
   });
 
   useEffect(() => {
@@ -232,55 +265,36 @@ export function SparkApp() {
     });
   }, [cloud.authReady, cloud.user, booted, cloud]);
 
-  /* 数据变化 → 计划推送 */
   useEffect(() => {
     if (!cloud.user || !cloud.baselineReady) return;
     if (!currentId || loadedFor !== currentId) return;
     cloud.schedulePush();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 手动推送即全部依赖
-  }, [notes, categories, workspaces, currentId]);
+  }, [notes, categories, workspaces, beam, currentId]);
 
-  /* 初始化：读取工作区列表 + 迁移 v1 全局数据 */
   useEffect(() => {
-    let cancelled = false;
     queueMicrotask(() => {
-      if (cancelled) return;
-      let list = loadWorkspaces();
-      if (list.length === 0) {
-        const seedId = createId();
-        if (migrateLegacyData(seedId)) {
-          const migrated: Workspace = {
-            id: seedId,
-            name: "默认工作区",
-            createdAt: nowMs(),
-          };
-          list = [migrated];
-          saveWorkspaces(list);
-          saveCurrentWorkspaceId(migrated.id);
-        }
-      }
-      const saved = loadCurrentWorkspaceId();
-      const cur = saved && list.some((w) => w.id === saved) ? saved : null;
-      setWorkspaces(list);
-      setCurrentId(cur);
       setBooted(true);
     });
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
-  /* 切换工作区时加载对应数据（异步微任务内 setState） */
+  /* 切换工作区：从会话缓存装载目标工作区数据 */
   useEffect(() => {
     if (!currentId) return;
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
-      const cats = loadCategories(currentId);
-      const last = loadLastTypeId(currentId);
+      const d = wsDataRef.current[currentId] ?? {
+        categories: [],
+        notes: [],
+        lastTypeId: null,
+      };
+      const cats = d.categories;
+      const last = d.lastTypeId;
       setCategories(cats);
-      setNotes(loadNotes(currentId));
+      setNotes([...d.notes].sort((a, b) => b.createdAt - a.createdAt));
       setTypeId(last && cats.some((c) => c.id === last) ? last : (cats[0]?.id ?? ""));
+      setViewMode(d.viewMode === "kanban" ? "kanban" : "list");
       setTab(ALL);
       setContent("");
       setLoadedFor(currentId);
@@ -290,42 +304,35 @@ export function SparkApp() {
     };
   }, [currentId]);
 
-  /* 持久化当前工作区的数据 */
+  /* state 变化后的兜底写回，保证会话缓存与渲染数据一致 */
   useEffect(() => {
     if (currentId && loadedFor === currentId)
-      saveCategories(currentId, categories);
-  }, [categories, currentId, loadedFor]);
+      stashCurrent({ categories, notes });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 手动推送即全部依赖
+  }, [categories, notes, currentId, loadedFor]);
 
+  /* 偏好同步：上次选中分类 / 视图模式，随推送通道上云 */
   useEffect(() => {
-    if (currentId && loadedFor === currentId) saveNotes(currentId, notes);
-  }, [notes, currentId, loadedFor]);
-
-  useEffect(() => {
-    if (currentId && loadedFor === currentId && typeId)
-      saveLastTypeId(currentId, typeId);
+    if (currentId && loadedFor === currentId && typeId) {
+      const d = wsDataRef.current[currentId];
+      if (d && d.lastTypeId !== typeId) {
+        d.lastTypeId = typeId;
+        cloud.schedulePush();
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 手动推送即全部依赖
   }, [typeId, currentId, loadedFor]);
 
-  /* 视图模式：随工作区隔离存储 */
   useEffect(() => {
-    if (!currentId) return;
-    queueMicrotask(() => {
-      setViewMode(loadViewMode(currentId));
-    });
-  }, [currentId]);
-
-  useEffect(() => {
-    if (currentId && loadedFor === currentId) saveViewMode(currentId, viewMode);
-  }, [currentId, loadedFor, viewMode]);
-
-  /* 搜索框光效：全局持久化 */
-  useEffect(() => {
-    // 挂载后以存储为准纠正 SSR 默认
-    setBeam(loadBeamSettings());
-  }, []);
-
-  useEffect(() => {
-    saveBeamSettings(beam);
-  }, [beam]);
+    if (currentId && loadedFor === currentId) {
+      const d = wsDataRef.current[currentId];
+      if (d && d.viewMode !== viewMode) {
+        d.viewMode = viewMode;
+        cloud.schedulePush();
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 手动推送即全部依赖
+  }, [viewMode, currentId, loadedFor]);
 
   const handleBeamChange = useCallback((patch: Partial<BeamSettings>) => {
     setBeam((prev) => ({ ...prev, ...patch }));
@@ -382,14 +389,11 @@ export function SparkApp() {
       if (ws.id === currentId) {
         stats[ws.id] = { noteCount: notes.length, categoryCount: categories.length };
       } else {
-        stats[ws.id] = {
-          noteCount: loadNotes(ws.id).length,
-          categoryCount: loadCategories(ws.id).length,
-        };
+        stats[ws.id] = wsCounts[ws.id] ?? { noteCount: 0, categoryCount: 0 };
       }
     }
     return stats;
-  }, [workspaces, currentId, notes.length, categories.length]);
+  }, [workspaces, currentId, notes.length, categories.length, wsCounts]);
 
   function enterWorkspace(id: string) {
     setLoadedFor(null);
@@ -402,7 +406,6 @@ export function SparkApp() {
 
   function handleSelectWorkspace(id: string) {
     if (!id || id === currentId) return;
-    saveCurrentWorkspaceId(id);
     enterWorkspace(id);
     if (cloud.user && cloud.baselineReady) {
       const seq = ++switchSeqRef.current;
@@ -424,11 +427,12 @@ export function SparkApp() {
     const ws: Workspace = { id: createId(), name, createdAt: nowMs() };
     const next = [...workspaces, ws];
     // 预写新工作区快照，保证立即推送时云端拿到一致数据
-    saveCategories(ws.id, DEFAULT_CATEGORIES.map((c) => ({ ...c })));
-    saveNotes(ws.id, []);
+    wsDataRef.current[ws.id] = {
+      categories: DEFAULT_CATEGORIES.map((c) => ({ ...c })),
+      notes: [],
+      lastTypeId: null,
+    };
     setWorkspaces(next);
-    saveWorkspaces(next);
-    saveCurrentWorkspaceId(ws.id);
     enterWorkspace(ws.id);
     pushSoon();
     window.setTimeout(() => inputRef.current?.focus(), 100);
@@ -439,7 +443,6 @@ export function SparkApp() {
     if (!name) return;
     const next = workspaces.map((w) => (w.id === id ? { ...w, name } : w));
     setWorkspaces(next);
-    saveWorkspaces(next);
     toast.success("已重命名工作区");
     pushSoon();
   }
@@ -447,20 +450,16 @@ export function SparkApp() {
   function handleDeleteWorkspace(id: string) {
     const isCurrent = id === currentId;
     const next = workspaces.filter((w) => w.id !== id);
-    deleteWorkspaceData(id);
+    delete wsDataRef.current[id];
     if (isCurrent) {
       if (next.length > 0) {
         const fallback = next[0].id;
         setWorkspaces(next);
-        saveWorkspaces(next);
         setCurrentId(fallback);
-        saveCurrentWorkspaceId(fallback);
         setLoadedFor(null);
         toast.success("已删除工作区");
       } else {
         setWorkspaces([]);
-        saveWorkspaces([]);
-        saveCurrentWorkspaceId(null);
         setCurrentId(null);
         setCategories([]);
         setNotes([]);
@@ -471,13 +470,12 @@ export function SparkApp() {
       }
     } else {
       setWorkspaces(next);
-      saveWorkspaces(next);
       toast.success("已删除工作区");
     }
     pushSoon();
   }
 
-  /** 变更后的即时推送：先落库再推，防刷新丢失 */
+  /** 关键变更跳过防抖立即推送 */
   function pushSoon() {
     if (!cloud.user || !cloud.baselineReady) return;
     queueMicrotask(() => {
@@ -488,11 +486,7 @@ export function SparkApp() {
   function handleDeleteCategory(id: string) {
     const rest = categories.filter((c) => c.id !== id);
     const nextNotes = notes.filter((n) => n.categoryId !== id);
-    // 同步落库，避免异步 effect 尚未保存时刷新或拉取被云端覆盖
-    if (currentId) {
-      saveCategories(currentId, rest);
-      saveNotes(currentId, nextNotes);
-    }
+    stashCurrent({ categories: rest, notes: nextNotes });
     setNotes(nextNotes);
     setCategories(rest);
     if (typeId === id) setTypeId(rest[0]?.id ?? "");
@@ -502,7 +496,7 @@ export function SparkApp() {
 
   function handleCreateCategory(category: Category) {
     const nextCats = [...categories, category];
-    if (currentId) saveCategories(currentId, nextCats);
+    stashCurrent({ categories: nextCats });
     setCategories(nextCats);
     setTypeId(category.id);
     pushSoon();
@@ -521,7 +515,7 @@ export function SparkApp() {
       priority: normalizePriority(priority),
     };
     const nextNotes = [note, ...notes];
-    saveNotes(currentId, nextNotes);
+    stashCurrent({ notes: nextNotes });
     setNotes(nextNotes);
     setContent("");
     setTab(currentCategory.id);
@@ -531,18 +525,17 @@ export function SparkApp() {
 
   function handleDelete(id: string) {
     const nextNotes = notes.filter((n) => n.id !== id);
-    if (currentId) saveNotes(currentId, nextNotes); // 立即落库
+    stashCurrent({ notes: nextNotes });
     setNotes(nextNotes);
     pushSoon();
   }
 
-  /** 勾选为「完成」切换开关；完成态随同步通道走 done 字段 */
   function handleToggleDone(noteId: string) {
     setNotes((prev) => {
       const next = prev.map((n) =>
         n.id === noteId ? { ...n, done: !n.done } : n
       );
-      if (currentId) saveNotes(currentId, next);
+      stashCurrent({ notes: next });
       return next;
     });
     pushSoon();
@@ -553,7 +546,7 @@ export function SparkApp() {
       const next = prev.map((n) =>
         n.id === noteId ? { ...n, priority: normalizePriority(p) } : n
       );
-      if (currentId) saveNotes(currentId, next);
+      stashCurrent({ notes: next });
       return next;
     });
     pushSoon();
@@ -561,26 +554,43 @@ export function SparkApp() {
 
   const handleKanbanNotesChange = useCallback(
     (nextNotes: Note[]) => {
+      stashCurrent({ notes: nextNotes });
       setNotes(nextNotes);
-      if (currentId) saveNotes(currentId, nextNotes);
       pushSoon();
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [currentId]
   );
 
-  function handleManualSync() {
+  /** 手动同步：先推本地变更再拉云端合并，两端立刻对齐 */
+  async function handleManualSync() {
     if (!cloud.user) return;
-    void cloud
-      .pushNow()
-      .then((ok) =>
-        ok ? toast.success("已同步") : toast.error("同步失败，请稍后重试")
-      );
+    const ok = await cloud.pushNow();
+    if (!ok) {
+      toast.error("同步失败，请稍后重试");
+      return;
+    }
+    try {
+      const remote = await apiPull();
+      cloud.applyRemote(remote);
+      toast.success("已同步");
+    } catch {
+      toast.success("已上传本地变更");
+    }
   }
 
   function handleLogout() {
     void cloud.logout().then(() => {
       baselineStartedRef.current = false;
+      // 清空会话内数据，避免残留状态串到下一个登录的账号
+      wsDataRef.current = {};
+      setWorkspaces([]);
+      setCurrentId(null);
+      setCategories([]);
+      setNotes([]);
+      setLoadedFor(null);
+      setViewMode("list");
+      setBeam({ ...DEFAULT_BEAM });
       toast.success("已退出登录");
     });
   }
