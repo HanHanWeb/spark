@@ -1,6 +1,7 @@
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { cookies } from "next/headers";
 import { SignJWT, jwtVerify } from "jose";
+import { getDb } from "@/lib/db";
 
 export interface SessionUser {
   id: string;
@@ -63,6 +64,28 @@ export async function getSessionUser(): Promise<SessionUser | null> {
       id: payload.sub,
       email: typeof payload.email === "string" ? payload.email : "",
     };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 会话签名有效且用户仍存在才放行；「幽灵会话」（用户已被删除或更换数据库）
+ * 静默清除 cookie 并视为未登录，避免客户端拿着失效会话反复请求报错。
+ */
+export async function getSessionUserStrict(): Promise<SessionUser | null> {
+  const user = await getSessionUser();
+  if (!user) return null;
+  try {
+    const res = await getDb().execute({
+      sql: "SELECT id FROM users WHERE id = ?",
+      args: [user.id],
+    });
+    if (res.rows.length === 0) {
+      await clearSessionCookie();
+      return null;
+    }
+    return user;
   } catch {
     return null;
   }

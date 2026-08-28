@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getDb, ensureSchema } from "@/lib/db";
-import { getSessionUser } from "@/lib/auth";
+import { getSessionUserStrict } from "@/lib/auth";
 
 interface WorkspaceSnapshot {
   categories: {
@@ -42,7 +42,7 @@ const VIEW_MODES = new Set(["list", "kanban"]);
 const MAX_PREFS_LENGTH = 8192;
 
 export async function GET() {
-  const user = await getSessionUser();
+  const user = await getSessionUserStrict();
   if (!user) return NextResponse.json({ error: "未登录" }, { status: 401 });
 
   await ensureSchema();
@@ -111,7 +111,7 @@ export async function GET() {
 }
 
 export async function PUT(req: Request) {
-  const user = await getSessionUser();
+  const user = await getSessionUserStrict();
   if (!user) return NextResponse.json({ error: "未登录" }, { status: 401 });
 
   let body: SyncPayload;
@@ -132,18 +132,9 @@ export async function PUT(req: Request) {
   await ensureSchema();
   const db = getDb();
 
-  // 全量替换该用户的云端数据（个人工具，规模小，简单可靠）
-  const stmts: Parameters<typeof db.batch>[0] = [
-    {
-      sql: "DELETE FROM notes WHERE workspace_id IN (SELECT id FROM workspaces WHERE user_id = ?)",
-      args: [user.id],
-    },
-    {
-      sql: "DELETE FROM categories WHERE workspace_id IN (SELECT id FROM workspaces WHERE user_id = ?)",
-      args: [user.id],
-    },
-    { sql: "DELETE FROM workspaces WHERE user_id = ?", args: [user.id] },
-  ];
+  // 先整体写入（OR REPLACE 覆盖同 id），最后只清理不在本次快照里的残留行。
+  // 顺序至关重要：若先 DELETE 后 INSERT，batch 中途失败会把用户云端数据清空。
+  const stmts: Parameters<typeof db.batch>[0] = [];
 
   for (const ws of body.workspaces) {
     if (!ws || typeof ws.id !== "string" || typeof ws.name !== "string") continue;
@@ -156,7 +147,7 @@ export async function PUT(req: Request) {
         ? ws.lastTypeId
         : null;
     stmts.push({
-      sql: "INSERT INTO workspaces (id, user_id, name, created_at, view_mode, last_type_id) VALUES (?, ?, ?, ?, ?, ?)",
+      sql: "INSERT OR REPLACE INTO workspaces (id, user_id, name, created_at, view_mode, last_type_id) VALUES (?, ?, ?, ?, ?, ?)",
       args: [ws.id, user.id, ws.name, ws.createdAt ?? Date.now(), viewMode, lastTypeId],
     });
 
@@ -167,7 +158,7 @@ export async function PUT(req: Request) {
       for (const c of snap.categories) {
         if (!c || typeof c.id !== "string") continue;
         stmts.push({
-          sql: "INSERT INTO categories (id, workspace_id, name, icon, color) VALUES (?, ?, ?, ?, ?)",
+          sql: "INSERT OR REPLACE INTO categories (id, workspace_id, name, icon, color) VALUES (?, ?, ?, ?, ?)",
           args: [c.id, ws.id, c.name, c.icon, c.color],
         });
       }
@@ -180,7 +171,7 @@ export async function PUT(req: Request) {
             ? n.priority
             : null;
         stmts.push({
-          sql: "INSERT INTO notes (id, workspace_id, category_id, content, created_at, done, priority) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          sql: "INSERT OR REPLACE INTO notes (id, workspace_id, category_id, content, created_at, done, priority) VALUES (?, ?, ?, ?, ?, ?, ?)",
           args: [
             n.id,
             ws.id,
@@ -193,6 +184,52 @@ export async function PUT(req: Request) {
         });
       }
     }
+  }
+
+  const userWorkspaces =
+    "workspace_id IN (SELECT id FROM workspaces WHERE user_id = ?)";
+  const newWsIds = body.workspaces
+    .filter((w) => w && typeof w.id === "string" && typeof w.name === "string")
+    .map((w) => w.id);
+  const newNoteIds: string[] = [];
+  const newCatKeys: string[] = [];
+  for (const ws of body.workspaces) {
+    if (!ws || typeof ws.id !== "string") continue;
+    const snap = body.state[ws.id];
+    if (!snap || !Array.isArray(snap.categories)) continue;
+    for (const c of snap.categories) {
+      if (c && typeof c.id === "string") newCatKeys.push(`${ws.id}\u001f${c.id}`);
+    }
+    if (Array.isArray(snap.notes)) {
+      for (const n of snap.notes) {
+        if (n && typeof n.id === "string") newNoteIds.push(n.id);
+      }
+    }
+  }
+  // 空集合时 NOT IN 无法占位，直接全删（语义等价：快照里没有任何该类行）
+  if (newNoteIds.length === 0) {
+    stmts.push({ sql: `DELETE FROM notes WHERE ${userWorkspaces}`, args: [user.id] });
+  } else {
+    stmts.push({
+      sql: `DELETE FROM notes WHERE ${userWorkspaces} AND id NOT IN (${newNoteIds.map(() => "?").join(",")})`,
+      args: [user.id, ...newNoteIds],
+    });
+  }
+  if (newCatKeys.length === 0) {
+    stmts.push({ sql: `DELETE FROM categories WHERE ${userWorkspaces}`, args: [user.id] });
+  } else {
+    stmts.push({
+      sql: `DELETE FROM categories WHERE ${userWorkspaces} AND workspace_id || char(31) || id NOT IN (${newCatKeys.map(() => "?").join(",")})`,
+      args: [user.id, ...newCatKeys],
+    });
+  }
+  if (newWsIds.length === 0) {
+    stmts.push({ sql: "DELETE FROM workspaces WHERE user_id = ?", args: [user.id] });
+  } else {
+    stmts.push({
+      sql: `DELETE FROM workspaces WHERE user_id = ? AND id NOT IN (${newWsIds.map(() => "?").join(",")})`,
+      args: [user.id, ...newWsIds],
+    });
   }
 
   await db.batch(stmts, "write");

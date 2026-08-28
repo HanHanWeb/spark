@@ -87,7 +87,40 @@ export function ensureSchema(): Promise<void> {
           "prefs",
           "ALTER TABLE users ADD COLUMN prefs TEXT"
         );
+        await rebuildCategoriesPk();
       });
   }
   return schemaPromise;
+}
+
+/**
+ * categories 主键从全局 id 迁移为 (workspace_id, id)：
+ * 默认分类 id（todo/idea 等）在多个工作区重复属合法数据，
+ * 全局唯一主键会让多工作区用户的推送永远撞 UNIQUE 约束。
+ * SQLite 不支持 ALTER 主键，需建新表拷贝后替换。
+ */
+async function rebuildCategoriesPk(): Promise<void> {
+  const db = getDb();
+  const cols = await db.execute("PRAGMA table_info(categories)");
+  // 复合主键下 workspace_id 与 id 的 pk 序号均 > 0；旧结构仅 id 有 pk=1
+  const pkCols = cols.rows.filter((r) => Number(r.pk) > 0);
+  const isLegacy = pkCols.length === 1 && String(pkCols[0].name) === "id";
+  if (!isLegacy) return;
+  await db.batch(
+    [
+      `CREATE TABLE categories_new (
+        id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        icon TEXT NOT NULL,
+        color TEXT NOT NULL,
+        PRIMARY KEY (workspace_id, id)
+      )`,
+      "INSERT INTO categories_new (id, workspace_id, name, icon, color) SELECT id, workspace_id, name, icon, color FROM categories",
+      "DROP TABLE categories",
+      "ALTER TABLE categories_new RENAME TO categories",
+      "CREATE INDEX IF NOT EXISTS idx_categories_ws ON categories(workspace_id)",
+    ],
+    "write"
+  );
 }

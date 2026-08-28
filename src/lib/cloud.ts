@@ -36,6 +36,14 @@ export interface CloudStatePayload {
 
 type SyncResponse = CloudStatePayload;
 
+/** 服务端返回 401：会话已失效，调用方应回到未登录状态而不是继续重试 */
+export class UnauthorizedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UnauthorizedError";
+  }
+}
+
 /** 统一包装 fetch：网络层失败（服务未启动/断网）给出友好中文提示 */
 async function request<T>(input: string, init?: RequestInit): Promise<T> {
   let res: Response;
@@ -43,6 +51,17 @@ async function request<T>(input: string, init?: RequestInit): Promise<T> {
     res = await fetch(input, { ...init, cache: "no-store" });
   } catch {
     throw new Error("无法连接服务器，请确认服务已启动");
+  }
+  if (res.status === 401) {
+    const data = (await res.json().catch(() => null)) as unknown;
+    const msg =
+      typeof data === "object" &&
+      data !== null &&
+      "error" in data &&
+      typeof (data as { error: unknown }).error === "string"
+        ? (data as { error: string }).error
+        : "登录已过期";
+    throw new UnauthorizedError(msg);
   }
   return jsonOrThrow<T>(res);
 }

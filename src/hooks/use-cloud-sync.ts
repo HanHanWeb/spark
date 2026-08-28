@@ -8,6 +8,7 @@ import {
   apiPull,
   apiPush,
   apiRegister,
+  UnauthorizedError,
   type CloudStatePayload,
   type CloudUser,
 } from "@/lib/cloud";
@@ -218,7 +219,12 @@ export function useCloudSync({
           // 对账期间产生的本地变更（如引导中新建的工作区）在此立即补推
           schedulePush();
           return;
-        } catch {
+        } catch (e) {
+          // 会话已失效：停止重试，回到登录态
+          if (e instanceof UnauthorizedError) {
+            await logout();
+            return;
+          }
           setStatus("error");
           await new Promise((r) => setTimeout(r, 3000 * (attempt + 1)));
         }
@@ -251,8 +257,9 @@ export function useCloudSync({
       try {
         const remote = await apiPull();
         if (alive) applyRemoteRef.current(remote);
-      } catch {
-        // 拉取失败时保留现有状态即可
+      } catch (e) {
+        // 会话已失效：停止刷新，回到登录态；其余失败保留现有状态即可
+        if (e instanceof UnauthorizedError) await logout();
       }
     };
     const onEvent = () => {
