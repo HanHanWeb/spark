@@ -229,6 +229,10 @@ export function useCloudSync({
           await new Promise((r) => setTimeout(r, 3000 * (attempt + 1)));
         }
       }
+      // 全部尝试失败：稍后自调度重试，直至对账成功或用户登出
+      setTimeout(() => {
+        if (user) void establishBaselineRef.current();
+      }, 5000);
     } finally {
       baselineRunningRef.current = false;
     }

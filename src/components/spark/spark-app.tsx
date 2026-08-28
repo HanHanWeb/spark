@@ -7,7 +7,6 @@ import {
   LayoutListIcon,
   Settings2Icon,
   XIcon,
-  ZapIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -28,8 +27,7 @@ import {
   type ViewMode,
   type Workspace,
 } from "@/lib/notes";
-import { NoteKanban } from "@/components/spark/note-kanban";
-import { PriorityChip } from "@/components/spark/priority-chip";
+import { NoteKanban } from "@/components/spark/note-kanban";import { PriorityChip } from "@/components/spark/priority-chip";
 import { PrioritySwitcher } from "@/components/spark/priority-switcher";
 import { BorderBeam } from "border-beam";
 import {
@@ -39,13 +37,6 @@ import {
 } from "@/components/ui/input-group";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import {
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from "@/components/ui/empty";
 import { CategoryChip } from "@/components/spark/category-chip";
 import { CategorySwitcher } from "@/components/spark/category-switcher";
 import { PageLoader } from "@/components/spark/loaders";
@@ -619,6 +610,8 @@ export function SparkApp() {
   }
 
   if (!currentId) {
+    // 云端对账未完成前数据尚不可知，显示加载态而非「创建工作区」引导，避免闪现
+    if (!cloud.baselineReady) return <PageLoader />;
     return (
       <WorkspaceOnboarding
         workspaces={workspaces}
@@ -795,17 +788,9 @@ export function SparkApp() {
             )}
           >
             {visibleNotes.length === 0 ? (
-              <Empty className="rounded-xl border py-14">
-                <EmptyHeader>
-                  <EmptyMedia variant="icon" className="size-12 rounded-xl">
-                    <ZapIcon className="!size-5 text-muted-foreground" />
-                  </EmptyMedia>
-                  <EmptyTitle>这里空空如也</EmptyTitle>
-                  {tab === ALL && (
-                    <EmptyDescription>在上方输入框写下第一条便签，回车即可保存</EmptyDescription>
-                  )}
-                </EmptyHeader>
-              </Empty>
+              <div className="rounded-xl border py-14 text-center text-sm text-muted-foreground">
+                还没有内容
+              </div>
             ) : (
               <ul className="divide-y overflow-hidden rounded-xl border bg-card shadow-sm">
               {visibleNotes.map((note) => {
@@ -881,25 +866,13 @@ export function SparkApp() {
             )}
           </div>
         ) : notes.length === 0 ? (
-          <Empty className="mt-4 rounded-xl border py-14">
-            <EmptyHeader>
-              <EmptyMedia variant="icon" className="size-12 rounded-xl">
-                <KanbanIcon className="!size-5 text-muted-foreground" />
-              </EmptyMedia>
-              <EmptyTitle>看板还是空的</EmptyTitle>
-              <EmptyDescription>在上方输入框写下第一条便签，回车即可在看板中查看</EmptyDescription>
-            </EmptyHeader>
-          </Empty>
+          <div className="mt-4 rounded-xl border py-14 text-center text-sm text-muted-foreground">
+            还没有内容
+          </div>
         ) : sortedNotes.length === 0 ? (
-          <Empty className="mt-4 rounded-xl border py-14">
-            <EmptyHeader>
-              <EmptyMedia variant="icon" className="size-12 rounded-xl">
-                <KanbanIcon className="!size-5 text-muted-foreground" />
-              </EmptyMedia>
-              <EmptyTitle>看板还是空的</EmptyTitle>
-              <EmptyDescription>在上方输入框写下第一条便签，回车即可在看板中查看</EmptyDescription>
-            </EmptyHeader>
-          </Empty>
+          <div className="mt-4 rounded-xl border py-14 text-center text-sm text-muted-foreground">
+            还没有内容
+          </div>
         ) : (
           <NoteKanban
             notes={sortedNotes}

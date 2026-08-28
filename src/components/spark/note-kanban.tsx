@@ -93,7 +93,7 @@ export function NoteKanban({
         columns={columns}
         data={data}
         onDataChange={handleDataChange as never}
-        className="gap-4 items-start"
+        className="gap-4 items-start lg:grid-cols-3"
       >
         {(column) => {
           const cat = categoryMap.get(column.id);
