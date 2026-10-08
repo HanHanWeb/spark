@@ -82,7 +82,7 @@ export function WelcomeStepper({
             src="/favicon.svg"
             alt=""
             width={64}
-            height={61}
+            height={64}
             className="relative size-14 drop-shadow-lg"
           />
           <h1 className="relative mt-6 text-3xl font-bold tracking-tight text-white">
@@ -164,14 +164,17 @@ export function WelcomeStepper({
                   </Button>
                 </div>
               ) : (
-                <AuthCard
-                  onLogin={onLogin}
-                  onRegister={onRegister}
-                  // 登录用户注册时已走完引导，直接进入应用；仅新注册继续分步流程
-                  onSuccess={(mode) =>
-                    mode === "register" ? setStep(1) : onComplete()
-                  }
-                />
+                /* 标题下方剩余空间内居中，表单列收窄；auto 外边距在内容超高时自动归零，保证滚动可达 */
+                <div className="m-auto w-full max-w-sm">
+                  <AuthCard
+                    onLogin={onLogin}
+                    onRegister={onRegister}
+                    // 登录用户注册时已走完引导，直接进入应用；仅新注册继续分步流程
+                    onSuccess={(mode) =>
+                      mode === "register" ? setStep(1) : onComplete()
+                    }
+                  />
+                </div>
               ))}
 
             {step === 1 && (

@@ -36,7 +36,7 @@ export function WorkspaceOnboarding({
             src="/favicon.svg"
             alt="Spark logo"
             width={56}
-            height={54}
+            height={56}
             priority
             className="size-14 drop-shadow-md"
           />

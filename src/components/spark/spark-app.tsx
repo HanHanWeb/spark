@@ -663,7 +663,7 @@ export function SparkApp() {
             src="/favicon.svg"
             alt="Spark logo"
             width={64}
-            height={61}
+            height={64}
             priority
             className="size-16 drop-shadow-lg"
           />
